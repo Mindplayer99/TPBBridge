@@ -2,7 +2,7 @@
  * TPBBridge - Home catalogue ordering support.
  *
  * This file is intentionally isolated from stream/debrid handling. It only
- * controls the order of HomePageList rows and the small ordering dialog.
+ * controls Home-row discovery, ordering, and the small ordering dialog.
  *
  * GPL-3.0-or-later.
  */
@@ -16,7 +16,18 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.lagradost.cloudstream3.HomePageList
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SearchResponseList
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.amap
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newSearchResponseList
 import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Locale
 
 internal const val PREF_HOME_SOURCES = "home_sources_v8"
@@ -48,6 +59,42 @@ internal fun loadHomeNameList(json: String): List<String> {
     } catch (_: Throwable) {
         emptyList()
     }
+}
+
+/**
+ * Discover normal Home/Recent source names in manifest order. This mirrors the
+ * same rule used by Catalog.isHomeCatalog(): required-extra catalogs are never
+ * Home rows, and only Recent catalogs are included.
+ */
+internal fun discoverHomeSources(bases: List<String>): List<String> {
+    val sources = mutableListOf<String>()
+    bases.forEach { base ->
+        val root = JSONObject(httpGetText("$base/manifest.json"))
+        val catalogs = root.optJSONArray("catalogs") ?: JSONArray()
+        for (i in 0 until catalogs.length()) {
+            val c = catalogs.optJSONObject(i) ?: continue
+            val name = c.optString("name", "")
+            val id = c.optString("id", "").trim()
+            if (id.isBlank()) continue
+
+            val extra = c.optJSONArray("extra")
+            var hasRequired = false
+            if (extra != null) {
+                for (j in 0 until extra.length()) {
+                    if (extra.optJSONObject(j)?.optBoolean("isRequired", false) == true) {
+                        hasRequired = true
+                        break
+                    }
+                }
+            }
+            if (hasRequired) continue
+            if (!"$name $id".lowercase(Locale.ROOT).contains("recent")) continue
+
+            val source = deriveSourceName(name, id)
+            if (source.isNotBlank() && !isGenericSourceName(source)) sources += source
+        }
+    }
+    return sources.distinctBy(::homeSourceKey)
 }
 
 /**
@@ -137,6 +184,105 @@ internal fun orderHomeRows(rows: Collection<HomeRow>, homeOrder: List<String>): 
                 .thenBy { it.index }
         )
         .map { it.value }
+}
+
+/**
+ * v8 Home provider. The only difference from the existing unified provider is
+ * that merged Home rows are ordered immediately before CloudStream receives
+ * them. Search behavior is intentionally kept identical to v7.
+ */
+internal class TPBOrderedHomeProvider(
+    override var name: String,
+    internal val manifestBases: List<String>,
+    internal val searchGroups: List<SearchRouteGroup>,
+    internal val combinedSearchEnabled: Boolean,
+    internal val homeOrder: List<String>
+) : TPBBaseProvider(manifestBases) {
+    override var mainUrl: String = "$SAFE_MAIN_URL/home"
+    override var lang: String = "en"
+    override val supportedTypes = setOf(TvType.Others)
+    override val hasMainPage = true
+    override val searchTimeoutMs: Long? = 90_000L
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val rows = manifestBases.amap { base ->
+            val manifest = fetchManifest(base) ?: return@amap emptyList<HomeRow>()
+            manifest.catalogs
+                .filter { it.isHomeCatalog() }
+                .amap { catalog -> catalog.toHomeRow(base, this, page) }
+                .filter { it.items.isNotEmpty() }
+        }.flatten()
+
+        val merged = linkedMapOf<String, HomeRow>()
+        rows.forEach { row ->
+            val key = homeSourceKey(row.name)
+            val old = merged[key]
+            if (old == null) {
+                merged[key] = row
+            } else {
+                merged[key] = old.copy(
+                    items = (old.items + row.items).distinctBy { it.url },
+                    horizontal = old.horizontal || row.horizontal
+                )
+            }
+        }
+
+        val ordered = orderHomeRows(merged.values, homeOrder)
+        return newHomePageResponse(
+            ordered.map { HomePageList(it.name, it.items, it.horizontal) },
+            false
+        )
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> =
+        if (combinedSearchEnabled) searchPage(query, 1).first else emptyList()
+
+    override suspend fun search(query: String, page: Int): SearchResponseList? {
+        if (!combinedSearchEnabled) return newSearchResponseList(emptyList(), false)
+        val (results, hasNext) = searchPage(query, page)
+        return newSearchResponseList(results, hasNext)
+    }
+
+    private suspend fun searchPage(query: String, page: Int): Pair<List<SearchResponse>, Boolean> {
+        if (query.isBlank() || page < 1) return emptyList<SearchResponse>() to false
+
+        data class NamedRoute(val source: String, val route: SearchRoute)
+        val namedRoutes = searchGroups.flatMap { group ->
+            group.routes.map { NamedRoute(group.sourceName, it) }
+        }
+        val usable = if (page == 1) namedRoutes else namedRoutes.filter { it.route.supportsSkip }
+        if (usable.isEmpty()) return emptyList<SearchResponse>() to false
+
+        val encoded = encodePath(query)
+        val skip = (page - 1) * SEARCH_PAGE_SIZE
+        val entries = usable.amap { named ->
+            val route = named.route
+            try {
+                val extras = buildString {
+                    append("search=").append(encoded)
+                    if (page > 1 && route.supportsSkip) append("&skip=").append(skip)
+                }
+                app.get(
+                    "${route.baseUrl}/catalog/${encodePath(route.type)}/${encodePath(route.catalogId)}/$extras.json",
+                    timeout = 90L
+                ).parsedSafe<CatalogResponse>()
+                    ?.metas.orEmpty()
+                    .filter { it.id.isNotBlank() && it.name.isNotBlank() }
+                    .map { Triple(named.source, route.baseUrl, it) }
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }.flatten()
+
+        val deduped = entries.distinctBy { (_, base, entry) ->
+            "${baseRef(base)}|${entry.type}|${entry.id}"
+        }
+        val results = deduped.mapNotNull { (source, base, entry) ->
+            entry.toSearchResponse(this, base, source)
+        }
+        val hasNext = namedRoutes.any { it.route.supportsSkip } && results.isNotEmpty()
+        return results to hasNext
+    }
 }
 
 internal fun showHomeCatalogueOrderDialog(
