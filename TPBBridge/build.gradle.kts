@@ -1,8 +1,8 @@
-version = 5
+version = 6
 
 cloudstream {
     language = "en"
-    description = "Optimized TPB/Stremio bridge: combined Home, clean per-source Search, direct/debrid and P2P stream support"
+    description = "TPB/Stremio bridge: combined Home, per-source and optional all-source Search, optional Studio/Performer/Tag filters, direct/debrid and P2P streams"
     authors = listOf("Mindplayer99", "TPBBridge contributors")
     status = 3
     tvTypes = listOf("Others")
