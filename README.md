@@ -2,13 +2,15 @@
 
 CloudStream pre-release bridge for Stremio-compatible TPB manifests.
 
-## What v8 does
+## What v9 does
 
 - One combined Home provider with clean per-source Recent rows (for example `Hotleak`, not `Hotleak · Recent`).
+- **Source management:** each discovered source can be enabled/disabled locally. Disabled sources are removed before Home catalogue requests and before Search/filter provider registration, so a broken source does not clutter or slow normal TPBBridge browsing/search.
 - **Custom Home catalogue ordering** with simple up/down controls. Ordering is stored locally, duplicate source rows remain merged, newly discovered sources are appended, and temporarily unavailable sources keep their remembered position.
-- One search-only CloudStream provider per discovered Stremio Search catalog.
-- Optional **Search all sources through the Home name** switch. When enabled, selecting the parent/Home provider in CloudStream Search fans out across every discovered source Search catalog.
-- Optional **Studio**, **Performer**, and **Tag** switches. These create search-only filter providers such as `Valley • Studio`; they never create Studio/Performer/Tag Home rows.
+- Disabled state is reversible and remembered independently from order. Resetting order does not re-enable disabled sources.
+- One search-only CloudStream provider per enabled discovered Stremio Search catalog.
+- Optional **Search all sources through the Home name** switch. When enabled, selecting the parent/Home provider in CloudStream Search fans out across every enabled source Search catalog.
+- Optional **Studio**, **Performer**, and **Tag** switches. These create search-only filter providers such as `Valley • Studio`; disabled sources are excluded and these filters never create Studio/Performer/Tag Home rows.
 - Filter search uses only option values TPB advertises in each required `genre` catalog. Exact matches are preferred; narrow partial matches are supported with a bounded fanout.
 - Multiple/split TPB manifests, one URL per line, with exact duplicate manifest URLs removed automatically.
 - One **Save + refresh** action: Search/filter/Home routes are re-discovered and providers are safely replaced in memory; the plugin does not hot-reload its own `.cs3`.
@@ -32,16 +34,21 @@ Built against `com.lagradost:cloudstream3:pre-release` and marked beta-only (`st
 4. Choose a Home name and optionally a Search prefix.
 5. Optionally enable parent/all-source Search and/or Studio/Performer/Tag filter search.
 6. Press **Save + refresh**. No app restart is required.
-7. After the first v8 refresh, use **Arrange Home catalogues** to move Home rows up/down. Press **Save + refresh** again to apply the chosen order.
+7. Open **Manage sources** to enable/disable sources and move Home rows up/down. Press **Save + refresh** to apply the changes.
 8. Select the combined Home provider for browsing. In CloudStream Search filters, select either the parent provider (if parent Search is enabled), individual source providers, or one of the optional filter providers.
 
 For a clean tube Home layout, `Recent` should be enabled in TPB. Per-source Search requires `Search` enabled in TPB. Optional Studio/Performer/Tag support requires those catalogs to be enabled in TPB too, but TPBBridge keeps them out of Home so they cannot recreate the old duplicate-row layout.
 
-## Home catalogue ordering
+## Source management and Home ordering
 
-Ordering changes only the sequence of Home rows sent to CloudStream. It does not touch catalog contents, metadata, stream resolution, debrid, headers, subtitles, or playback.
+The source manager controls two independent things:
 
-The ordering system uses normalized source names as stable local keys. Same-source rows from split manifests are merged before ordering, so one source has one position. New sources are appended without overwriting the user's existing order. A temporarily unavailable source remains in the saved order and returns to its remembered position when it reappears. **Reset to default** restores the current manifest Home order.
+- **On/Off:** turning a source off removes its Home row, its individual Search provider, its contribution to combined Home-name Search, and its routes from Studio/Performer/Tag aggregate searches. Home catalogs for that disabled source are filtered before their content endpoint is requested.
+- **Order:** up/down changes only the sequence of Home rows sent to CloudStream. It does not touch catalog contents, metadata, stream resolution, debrid, headers, subtitles, or playback.
+
+Source state uses normalized source names as local keys. Same-source rows from split manifests are merged before ordering, so one source has one position/state. New sources are enabled by default and appended without overwriting the existing order. A temporarily unavailable source keeps both its remembered position and disabled state, so it returns consistently if it later reappears. **Reset order** changes positions only; it never re-enables disabled sources.
+
+Disabling a source does not rewrite the remote TPB manifest and does not erase old CloudStream history/bookmarks already stored by the app. It only stops TPBBridge from exposing/requesting that source through its active Home/Search/filter surfaces. Permanent removal from the upstream manifest should be done in TPB itself.
 
 ## Optional filter behavior
 
