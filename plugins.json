@@ -1,0 +1,22 @@
+[
+    {
+        "fileHash": "sha256-3889ae613407aa086cf5f3d8c1402c6c0b9ed2fccbcac0726f2ff8449c51d1d1",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/Mindplayer99/TPBBridge",
+        "fileSize": 154229,
+        "status": 3,
+        "language": "en",
+        "authors": [
+            "Mindplayer99",
+            "TPBBridge contributors"
+        ],
+        "tvTypes": [
+            "Others"
+        ],
+        "version": 21,
+        "internalName": "TPBBridge",
+        "description": "TPB/Stremio bridge with guided profiles, validated manifests, complete paged catalogs, lossless cached/P2P mirrors and formatted MegaPack episodes",
+        "url": "https://raw.githubusercontent.com/Mindplayer99/TPBBridge/builds/TPBBridge.cs3",
+        "name": "TPBBridge"
+    }
+]

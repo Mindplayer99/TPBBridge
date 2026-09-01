@@ -1,0 +1,8 @@
+{
+  "name": "TPBBridge",
+  "description": "TPB/Stremio bridge for CloudStream pre-release",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/Mindplayer99/TPBBridge/builds/plugins.json"
+  ]
+}
