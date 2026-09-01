@@ -1,58 +1,41 @@
-**⚠️ This is currently under development, dont use it yet if you're not comfortable with constantly merging new changes**
+# TPBBridge
 
-# `Cloudstream3 Plugin Repo Template`
+Experimental CloudStream pre-release plugin for Stremio-compatible TPB manifests.
 
-Template for a [Cloudstream3](https://github.com/recloudstream) plugin repo
+## Goal
 
-**⚠️ Make sure you check "Include all branches" when using this template**
+Use one TPB configuration while getting:
 
- 
-## Getting started with writing your first plugin
+- one combined CloudStream Home provider containing the enabled `Source · Recent` rows;
+- separate CloudStream global-search providers for each discovered `Source · Search` catalog;
+- support for TPB split manifests by pasting every generated manifest URL;
+- direct HTTP/HLS playback with Stremio `behaviorHints.proxyHeaders.request` / `headers` preserved.
 
-This template includes 1 example plugin.
+The combined Home provider deliberately returns no global-search results, preventing the same TPB configuration from appearing once as a giant merged search bucket and again under each source-specific provider.
 
-1. Open the root build.gradle.kts, read the comments and replace all the placeholders
-2. Familiarize yourself with the project structure. Most files are commented
-3. Build or deploy your first plugin using:
-   - Windows: `.\gradlew.bat ExampleProvider:make` or `.\gradlew.bat ExampleProvider:deployWithAdb`
-   - Linux & Mac: `./gradlew ExampleProvider:make` or `./gradlew ExampleProvider:deployWithAdb`
+## Target
 
+The repository builds against `com.lagradost:cloudstream3:pre-release` and the plugin is marked beta-only (`status = 3`). Red/pre-release CloudStream is therefore the primary target.
 
-## Granting All Files Access on Newer Android Devices
+## Security
 
-For local plugin testing, you need to grant the app "All Files Access" on newer Android devices (Android 11 and above). Here’s how to do it:
+Never commit a configured TPB manifest URL to GitHub. A configured manifest path can contain encoded service credentials. TPBBridge stores manifest URLs only in CloudStream's local SharedPreferences.
 
-### Using ADB
+## First device setup
 
-* `adb shell appops set --uid PACKAGE_NAME MANAGE_EXTERNAL_STORAGE allow`
-* Replace `PACKAGE_NAME` with the name of the package for the Cloudstream3 version you are using:
-   - debug: `com.lagradost.cloudstream3.prerelease.debug`
-   - prerelease: `com.lagradost.cloudstream3.prerelease`
-   - stable: `com.lagradost.cloudstream3`
+1. Install TPBBridge from this repository in CloudStream pre-release.
+2. Open TPBBridge plugin settings.
+3. Paste all TPB split manifest URLs, one per line.
+4. Press **Discover sources + save**.
+5. Fully close and reopen CloudStream so the discovered per-source providers are registered.
+6. Select the combined TPB Home provider for browsing; use CloudStream global search for the separately named source providers.
 
-### Manually
+For the intended tube-only layout, keep `Recent` and `Search` enabled for each source and disable `Studio`, `Tag`, and `Performer` catalogs unless you specifically want those filtered catalogs.
 
-1. **Open Settings**: Go to your device’s Settings menu.
+## Scope
 
-2. **Navigate to Special Access**:
-   - Tap on "Apps & notifications" or "Apps".
-   - Select "Special app access" or "Special access".
+The first stable target is direct URL/HLS/MP4 tube playback. Raw `infoHash`/magnet playback is intentionally outside the initial scope. The TPB backend remains responsible for catalog, metadata, and stream resolution; TPBBridge is the CloudStream UI/protocol bridge.
 
-3. **Select All Files Access**:
-   - Tap on "All files access".
-   - It may be under the three vertical dots menu towards the top of the screen.
+## Attribution and license
 
-4. **Grant Access to the App**: Find the app in the list and tap on it to toggle it, if it is not already enabled.
-
-6. **Restart the App**: Close and reopen the app to apply the changes.
-
-
-## License
-
-Everything in this repo is released into the public domain. You may use it however you want with no conditions whatsoever
-
-
-## Attribution
-
-This template as well as the gradle plugin and the whole plugin system is **heavily** based on [Aliucord](https://github.com/Aliucord).
-*Go use it, it's a great mobile discord client mod!*
+The Stremio-to-CloudStream protocol approach is derived from GPL bridge work by Hexated/phisher98 and compatible forks. TPBBridge is intended to be distributed under GPL-3.0-or-later. CloudStream's TestPlugins repository is used as the build template.
