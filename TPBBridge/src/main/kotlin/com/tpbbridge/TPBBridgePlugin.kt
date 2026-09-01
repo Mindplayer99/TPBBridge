@@ -3,7 +3,7 @@
  *
  * Reads configured Stremio/TPB manifests, keeps normal Recent catalogs together
  * in one Home provider, and exposes each Search catalog as its own CloudStream
- * provider. Optional v6 switches add parent/all-source Search and TPB's required
+ * provider. Optional switches add parent/all-source Search and TPB's required
  * Studio/Performer/Tag filter catalogs without polluting Home rows.
  *
  * GPL-3.0-or-later. Stremio protocol handling is derived from the GPL bridge
@@ -144,39 +144,63 @@ class TPBBridgePlugin : Plugin() {
         val prefs = activity.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
 
         fun dp(v: Int): Int = (v * activity.resources.displayMetrics.density).toInt()
+        fun section(text: String): TextView = TextView(activity).apply {
+            this.text = text
+            textSize = 17f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(0, dp(16), 0, dp(5))
+        }
         fun label(text: String): TextView = TextView(activity).apply {
             this.text = text
+            textSize = 15f
             setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, dp(12), 0, dp(4))
+            setPadding(0, dp(8), 0, dp(2))
         }
         fun helper(text: String): TextView = TextView(activity).apply {
             this.text = text
-            alpha = 0.78f
-            setPadding(0, 0, 0, dp(4))
+            textSize = 13f
+            alpha = 0.72f
+            setPadding(0, 0, 0, dp(3))
+        }
+        fun warning(text: String): TextView = TextView(activity).apply {
+            this.text = "⚠ $text"
+            textSize = 13f
+            alpha = 0.9f
+            setPadding(0, dp(2), 0, dp(4))
         }
         fun toggle(text: String, checked: Boolean): Switch = Switch(activity).apply {
             this.text = text
+            textSize = 16f
             isChecked = checked
-            setPadding(0, dp(3), 0, dp(3))
+            setPadding(0, dp(2), 0, dp(2))
+        }
+        fun compactSummary(manifestCount: Int, searchCount: Int): String {
+            if (manifestCount == 0) return "Not configured"
+            val manifests = if (manifestCount == 1) "manifest" else "manifests"
+            val sources = if (searchCount == 1) "source" else "sources"
+            return "$manifestCount $manifests • $searchCount $sources"
         }
 
         val root = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(8), dp(18), dp(18))
+            setPadding(dp(18), dp(6), dp(18), dp(18))
         }
 
         val currentRoutes = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
-        val currentFacets = loadFacetRoutes(prefs.getString(PREF_FACET_ROUTES, "").orEmpty())
         val currentBases = parseManifestInput(prefs.getString(PREF_MANIFESTS, "").orEmpty())
+        var hasSavedConfiguration = currentBases.isNotEmpty()
 
         val summary = TextView(activity).apply {
-            setPadding(0, 0, 0, dp(8))
-            text = advancedConfigurationSummary(currentBases.size, currentRoutes, currentFacets)
+            textSize = 13.5f
+            alpha = 0.78f
+            setPadding(0, 0, 0, dp(2))
+            text = compactSummary(currentBases.size, currentRoutes.size)
         }
         root.addView(summary)
 
+        root.addView(section("Setup"))
         root.addView(label("Manifest URL(s)"))
-        root.addView(helper("Paste TPB/Stremio manifest URLs, one per line. They stay in CloudStream app storage and are never written to GitHub."))
+        root.addView(helper("One URL per line"))
         val manifestsEdit = EditText(activity).apply {
             minLines = 3
             maxLines = 6
@@ -188,8 +212,10 @@ class TPBBridgePlugin : Plugin() {
             manifestsEdit,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         )
+        root.addView(warning("Manifest URLs can contain private API keys. Keep them private."))
 
         root.addView(label("Home name"))
+        root.addView(helper("Name for the combined Home provider"))
         val homeNameEdit = EditText(activity).apply {
             setSingleLine(true)
             setText(prefs.getString(PREF_HOME_NAME, DEFAULT_HOME_NAME) ?: DEFAULT_HOME_NAME)
@@ -198,41 +224,43 @@ class TPBBridgePlugin : Plugin() {
         root.addView(homeNameEdit)
 
         root.addView(label("Search prefix (optional)"))
-        root.addView(helper("Leave blank for clean per-source names such as Hotleak and Notfans."))
+        root.addView(helper("Leave blank for clean source names"))
         val prefixEdit = EditText(activity).apply {
             setSingleLine(true)
             setText(prefs.getString(PREF_SEARCH_PREFIX, DEFAULT_SEARCH_PREFIX) ?: DEFAULT_SEARCH_PREFIX)
-            hint = "Example: TPB • "
+            hint = "TPB • "
         }
         root.addView(prefixEdit)
 
-        root.addView(label("Search behavior"))
+        root.addView(section("Search"))
         val parentSearchSwitch = toggle(
-            "Search all sources through the Home name",
+            "Search through Home name",
             prefs.getBoolean(PREF_PARENT_SEARCH, false)
         )
         root.addView(parentSearchSwitch)
-        root.addView(helper("OFF keeps the Home name browse-only. ON lets the Home provider itself search every discovered source Search catalog at once. Per-source Search providers remain available either way."))
+        root.addView(helper("Combine results from all discovered sources"))
+        root.addView(warning("Selecting Home + individual sources together can show duplicate results."))
 
-        root.addView(label("Optional TPB filter search"))
-        root.addView(helper("These never add Studio/Performer/Tag rows to Home. When enabled, they appear only as search providers such as ‘Valley • Studio’. TPB must expose the matching filter catalogs in the manifest."))
+        root.addView(section("Extra filters"))
+        root.addView(helper("Search only • never shown as Home rows"))
         val studioSwitch = toggle("Studio", prefs.getBoolean(PREF_FACET_STUDIO, false))
         val performerSwitch = toggle("Performer", prefs.getBoolean(PREF_FACET_PERFORMER, false))
         val tagSwitch = toggle("Tag", prefs.getBoolean(PREF_FACET_TAG, false))
         root.addView(studioSwitch)
         root.addView(performerSwitch)
         root.addView(tagSwitch)
-        root.addView(helper("Filter search matches what you type against TPB's advertised option list. Exact matches are preferred; narrow partial matches are allowed. All three are OFF by default."))
+        root.addView(helper("Requires matching filters enabled in TPB."))
 
         val status = TextView(activity).apply {
-            setPadding(0, dp(12), 0, dp(8))
-            text = "Ready."
+            textSize = 13.5f
+            setPadding(0, dp(10), 0, dp(6))
+            text = ""
         }
         root.addView(status)
 
-        val apply = Button(activity).apply { text = "Save + apply now" }
+        val apply = Button(activity).apply { text = "Save + refresh" }
         root.addView(apply)
-        root.addView(helper("Re-discovers Search and optional filter catalogs, then safely refreshes only TPBBridge providers. No app restart is needed."))
+        root.addView(helper("No app restart needed"))
 
         val scroll = ScrollView(activity).apply { addView(root) }
         val dialog = AlertDialog.Builder(activity)
@@ -252,36 +280,50 @@ class TPBBridgePlugin : Plugin() {
             val tagEnabled = tagSwitch.isChecked
 
             if (raw.isNotBlank() && bases.isEmpty()) {
-                status.text = "No valid HTTP/HTTPS/Stremio manifest URL was found."
+                status.text = "⚠ No valid manifest URL found."
                 return@setOnClickListener
             }
 
             if (bases.isEmpty()) {
-                prefs.edit()
-                    .putString(PREF_MANIFESTS, "")
-                    .putString(PREF_HOME_NAME, homeName)
-                    .putString(PREF_SEARCH_PREFIX, prefix)
-                    .putBoolean(PREF_PARENT_SEARCH, parentSearch)
-                    .putBoolean(PREF_FACET_STUDIO, studioEnabled)
-                    .putBoolean(PREF_FACET_PERFORMER, performerEnabled)
-                    .putBoolean(PREF_FACET_TAG, tagEnabled)
-                    .remove(PREF_ROUTES)
-                    .remove(PREF_FACET_ROUTES)
-                    .apply()
-                invalidateManifestCache()
-                replaceProviders(
-                    emptyList(), homeName, prefix, emptyList(), emptyList(),
-                    parentSearch, studioEnabled, performerEnabled, tagEnabled,
-                    notifyUi = true
-                )
-                summary.text = advancedConfigurationSummary(0, emptyList(), emptyList())
-                status.text = "Cleared and applied."
-                Toast.makeText(activity, "TPBBridge configuration cleared.", Toast.LENGTH_SHORT).show()
+                fun clearNow() {
+                    prefs.edit()
+                        .putString(PREF_MANIFESTS, "")
+                        .putString(PREF_HOME_NAME, homeName)
+                        .putString(PREF_SEARCH_PREFIX, prefix)
+                        .putBoolean(PREF_PARENT_SEARCH, parentSearch)
+                        .putBoolean(PREF_FACET_STUDIO, studioEnabled)
+                        .putBoolean(PREF_FACET_PERFORMER, performerEnabled)
+                        .putBoolean(PREF_FACET_TAG, tagEnabled)
+                        .remove(PREF_ROUTES)
+                        .remove(PREF_FACET_ROUTES)
+                        .apply()
+                    invalidateManifestCache()
+                    replaceProviders(
+                        emptyList(), homeName, prefix, emptyList(), emptyList(),
+                        parentSearch, studioEnabled, performerEnabled, tagEnabled,
+                        notifyUi = true
+                    )
+                    hasSavedConfiguration = false
+                    summary.text = "Not configured"
+                    status.text = "Cleared."
+                    Toast.makeText(activity, "TPBBridge cleared.", Toast.LENGTH_SHORT).show()
+                }
+
+                if (hasSavedConfiguration) {
+                    AlertDialog.Builder(activity)
+                        .setTitle("Clear TPBBridge?")
+                        .setMessage("This removes the saved manifests and TPBBridge providers.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Clear") { _, _ -> clearNow() }
+                        .show()
+                } else {
+                    clearNow()
+                }
                 return@setOnClickListener
             }
 
             apply.isEnabled = false
-            status.text = "Reading manifest(s) and discovering Search/filter catalogs…"
+            status.text = "Refreshing…"
 
             Thread {
                 try {
@@ -314,11 +356,8 @@ class TPBBridgePlugin : Plugin() {
                             notifyUi = true
                         )
                         apply.isEnabled = true
-                        summary.text = advancedConfigurationSummary(
-                            bases.size,
-                            discovered.searchGroups,
-                            discovered.facetRoutes
-                        )
+                        hasSavedConfiguration = true
+                        summary.text = compactSummary(bases.size, discovered.searchGroups.size)
 
                         fun count(kind: FacetKind): Int = discovered.facetRoutes
                             .filter { it.kind == kind }
@@ -326,23 +365,33 @@ class TPBBridgePlugin : Plugin() {
                             .distinct()
                             .size
 
+                        val warnings = mutableListOf<String>()
+                        if (discovered.searchGroups.isEmpty()) {
+                            warnings += "No Search catalogs found; enable Search in TPB."
+                        }
+                        if (studioEnabled && count(FacetKind.STUDIO) == 0) {
+                            warnings += "Studio is ON but unavailable in this manifest."
+                        }
+                        if (performerEnabled && count(FacetKind.PERFORMER) == 0) {
+                            warnings += "Performer is ON but unavailable in this manifest."
+                        }
+                        if (tagEnabled && count(FacetKind.TAG) == 0) {
+                            warnings += "Tag is ON but unavailable in this manifest."
+                        }
+
                         status.text = buildString {
-                            append("Applied now: ${discovered.searchGroups.size} source Search provider(s).")
-                            append(" Filters available — Studio ${count(FacetKind.STUDIO)}, Performer ${count(FacetKind.PERFORMER)}, Tag ${count(FacetKind.TAG)}.")
-                            if (discovered.searchGroups.isEmpty()) {
-                                append(" Home still works; enable Search in TPB for sources you want searchable.")
+                            append("Saved • ${discovered.searchGroups.size} sources")
+                            if (warnings.isNotEmpty()) {
+                                append("\n⚠ ")
+                                append(warnings.joinToString(" "))
                             }
                         }
-                        Toast.makeText(
-                            activity,
-                            "TPBBridge applied ${discovered.searchGroups.size} Search source(s).",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        Toast.makeText(activity, "TPBBridge refreshed.", Toast.LENGTH_SHORT).show()
                     }
                 } catch (t: Throwable) {
                     activity.runOnUiThread {
                         apply.isEnabled = true
-                        status.text = "Could not read manifest: ${t.message ?: t.javaClass.simpleName}. Existing working providers were left unchanged."
+                        status.text = "⚠ Could not refresh: ${t.message ?: t.javaClass.simpleName}. Existing providers were kept."
                     }
                 }
             }.start()
