@@ -56,7 +56,21 @@ jobs:
           set -euo pipefail
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
-          ./gradlew make makePluginsJson
+
+          # JitPack occasionally has transient outages. Retry dependency resolution,
+          # but never publish unless a complete real build succeeds.
+          for attempt in 1 2 3; do
+            echo "Gradle build attempt $attempt/3"
+            if ./gradlew --refresh-dependencies make makePluginsJson; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Gradle build failed after 3 attempts"
+              exit 1
+            fi
+            sleep $((attempt * 20))
+          done
+
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
           cp build/plugins.json $GITHUB_WORKSPACE/builds
 
