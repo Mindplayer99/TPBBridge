@@ -4,7 +4,8 @@
  * Reads configured Stremio/TPB manifests, keeps normal Recent catalogs together
  * in one Home provider, and exposes each Search catalog as its own CloudStream
  * provider. Optional switches add parent/all-source Search and TPB's required
- * Studio/Performer/Tag filter catalogs without polluting Home rows.
+ * Studio/Performer/Tag filter catalogs without polluting Home rows. Home rows can
+ * also be reordered locally without touching stream/debrid behavior.
  *
  * GPL-3.0-or-later. Stremio protocol handling is derived from the GPL bridge
  * approach used by Hexated/phisher98 and compatible forks.
@@ -54,6 +55,7 @@ class TPBBridgePlugin : Plugin() {
         val prefix = prefs.getString(PREF_SEARCH_PREFIX, DEFAULT_SEARCH_PREFIX).orEmpty()
         val routeGroups = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
         val facetRoutes = loadFacetRoutes(prefs.getString(PREF_FACET_ROUTES, "").orEmpty())
+        val homeOrder = loadHomeNameList(prefs.getString(PREF_HOME_ORDER, "").orEmpty())
 
         replaceProviders(
             bases = bases,
@@ -61,6 +63,7 @@ class TPBBridgePlugin : Plugin() {
             prefix = prefix,
             routeGroups = routeGroups,
             facetRoutes = facetRoutes,
+            homeOrder = homeOrder,
             parentSearch = prefs.getBoolean(PREF_PARENT_SEARCH, false),
             studioEnabled = prefs.getBoolean(PREF_FACET_STUDIO, false),
             performerEnabled = prefs.getBoolean(PREF_FACET_PERFORMER, false),
@@ -76,6 +79,7 @@ class TPBBridgePlugin : Plugin() {
         prefix: String,
         routeGroups: List<SearchRouteGroup>,
         facetRoutes: List<FacetRoute>,
+        homeOrder: List<String>,
         parentSearch: Boolean,
         studioEnabled: Boolean,
         performerEnabled: Boolean,
@@ -93,11 +97,12 @@ class TPBBridgePlugin : Plugin() {
         }
 
         if (bases.isNotEmpty()) {
-            val home = TPBUnifiedHomeProvider(
+            val home = TPBOrderedHomeProvider(
                 name = homeName,
                 manifestBases = bases,
                 searchGroups = routeGroups,
-                combinedSearchEnabled = parentSearch
+                combinedSearchEnabled = parentSearch,
+                homeOrder = homeOrder
             )
             registerMainAPI(home)
             registeredProviders += home
@@ -188,6 +193,11 @@ class TPBBridgePlugin : Plugin() {
 
         val currentRoutes = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
         val currentBases = parseManifestInput(prefs.getString(PREF_MANIFESTS, "").orEmpty())
+        var availableHomeSources = loadHomeNameList(prefs.getString(PREF_HOME_SOURCES, "").orEmpty())
+        var workingHomeOrder = reconcileHomeOrder(
+            loadHomeNameList(prefs.getString(PREF_HOME_ORDER, "").orEmpty()),
+            availableHomeSources
+        )
         var hasSavedConfiguration = currentBases.isNotEmpty()
 
         val summary = TextView(activity).apply {
@@ -223,6 +233,17 @@ class TPBBridgePlugin : Plugin() {
         }
         root.addView(homeNameEdit)
 
+        val arrangeHome = Button(activity).apply {
+            text = "Arrange Home catalogues"
+            isEnabled = availableHomeSources.isNotEmpty()
+        }
+        root.addView(arrangeHome)
+        val arrangeHint = helper(
+            if (availableHomeSources.isEmpty()) "Save + refresh once to discover Home rows"
+            else "Set which catalogue rows appear first"
+        )
+        root.addView(arrangeHint)
+
         root.addView(label("Search prefix (optional)"))
         root.addView(helper("Leave blank for clean source names"))
         val prefixEdit = EditText(activity).apply {
@@ -257,6 +278,17 @@ class TPBBridgePlugin : Plugin() {
             text = ""
         }
         root.addView(status)
+
+        arrangeHome.setOnClickListener {
+            showHomeCatalogueOrderDialog(
+                activity = activity,
+                discoveredSources = availableHomeSources,
+                initialFullOrder = workingHomeOrder
+            ) { nextOrder ->
+                workingHomeOrder = nextOrder
+                status.text = "Home order changed • Save + refresh to apply"
+            }
+        }
 
         val apply = Button(activity).apply { text = "Save + refresh" }
         root.addView(apply)
@@ -296,13 +328,19 @@ class TPBBridgePlugin : Plugin() {
                         .putBoolean(PREF_FACET_TAG, tagEnabled)
                         .remove(PREF_ROUTES)
                         .remove(PREF_FACET_ROUTES)
+                        .remove(PREF_HOME_SOURCES)
+                        .remove(PREF_HOME_ORDER)
                         .apply()
                     invalidateManifestCache()
                     replaceProviders(
-                        emptyList(), homeName, prefix, emptyList(), emptyList(),
+                        emptyList(), homeName, prefix, emptyList(), emptyList(), emptyList(),
                         parentSearch, studioEnabled, performerEnabled, tagEnabled,
                         notifyUi = true
                     )
+                    availableHomeSources = emptyList()
+                    workingHomeOrder = emptyList()
+                    arrangeHome.isEnabled = false
+                    arrangeHint.text = "Save + refresh once to discover Home rows"
                     hasSavedConfiguration = false
                     summary.text = "Not configured"
                     status.text = "Cleared."
@@ -328,6 +366,13 @@ class TPBBridgePlugin : Plugin() {
             Thread {
                 try {
                     val discovered = discoverBridgeRoutes(bases)
+                    val discoveredHomeSources = try {
+                        discoverHomeSources(bases)
+                    } catch (_: Throwable) {
+                        discovered.searchGroups.map { it.sourceName }
+                            .distinctBy(::homeSourceKey)
+                    }
+                    val nextHomeOrder = reconcileHomeOrder(workingHomeOrder, discoveredHomeSources)
 
                     prefs.edit()
                         .putString(PREF_MANIFESTS, raw)
@@ -335,6 +380,8 @@ class TPBBridgePlugin : Plugin() {
                         .putString(PREF_SEARCH_PREFIX, prefix)
                         .putString(PREF_ROUTES, saveRouteGroups(discovered.searchGroups))
                         .putString(PREF_FACET_ROUTES, saveFacetRoutes(discovered.facetRoutes))
+                        .putString(PREF_HOME_SOURCES, saveHomeNameList(discoveredHomeSources))
+                        .putString(PREF_HOME_ORDER, saveHomeNameList(nextHomeOrder))
                         .putBoolean(PREF_PARENT_SEARCH, parentSearch)
                         .putBoolean(PREF_FACET_STUDIO, studioEnabled)
                         .putBoolean(PREF_FACET_PERFORMER, performerEnabled)
@@ -349,6 +396,7 @@ class TPBBridgePlugin : Plugin() {
                             prefix = prefix,
                             routeGroups = discovered.searchGroups,
                             facetRoutes = discovered.facetRoutes,
+                            homeOrder = nextHomeOrder,
                             parentSearch = parentSearch,
                             studioEnabled = studioEnabled,
                             performerEnabled = performerEnabled,
@@ -356,6 +404,14 @@ class TPBBridgePlugin : Plugin() {
                             notifyUi = true
                         )
                         apply.isEnabled = true
+                        availableHomeSources = discoveredHomeSources
+                        workingHomeOrder = nextHomeOrder
+                        arrangeHome.isEnabled = availableHomeSources.isNotEmpty()
+                        arrangeHint.text = if (availableHomeSources.isEmpty()) {
+                            "Save + refresh once to discover Home rows"
+                        } else {
+                            "Set which catalogue rows appear first"
+                        }
                         hasSavedConfiguration = true
                         summary.text = compactSummary(bases.size, discovered.searchGroups.size)
 
@@ -366,6 +422,9 @@ class TPBBridgePlugin : Plugin() {
                             .size
 
                         val warnings = mutableListOf<String>()
+                        if (discoveredHomeSources.isEmpty()) {
+                            warnings += "No Home catalogues found; enable Recent in TPB."
+                        }
                         if (discovered.searchGroups.isEmpty()) {
                             warnings += "No Search catalogs found; enable Search in TPB."
                         }
