@@ -1,10 +1,10 @@
-version = 4
+version = 5
 
 cloudstream {
     language = "en"
-    description = "TPB/Stremio catalog bridge: combined Home, separate per-source search providers"
+    description = "Optimized TPB/Stremio bridge: combined Home, clean per-source Search, direct/debrid and P2P stream support"
     authors = listOf("Mindplayer99", "TPBBridge contributors")
     status = 3
-    tvTypes = listOf("Others", "Movie")
+    tvTypes = listOf("Others")
     requiresResources = false
 }

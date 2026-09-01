@@ -1,41 +1,48 @@
 # TPBBridge
 
-Experimental CloudStream pre-release plugin for Stremio-compatible TPB manifests.
+CloudStream pre-release bridge for Stremio-compatible TPB manifests.
 
-## Goal
+## What v5 does
 
-Use one TPB configuration while getting:
-
-- one combined CloudStream Home provider containing the enabled `Source · Recent` rows;
-- separate CloudStream global-search providers for each discovered `Source · Search` catalog;
-- support for TPB split manifests by pasting every generated manifest URL;
-- direct HTTP/HLS playback with Stremio `behaviorHints.proxyHeaders.request` / `headers` preserved.
-
-The combined Home provider deliberately returns no global-search results, preventing the same TPB configuration from appearing once as a giant merged search bucket and again under each source-specific provider.
+- One combined Home provider with clean per-source rows (for example `Hotleak`, not `Hotleak · Recent`).
+- One search-only CloudStream provider per discovered Stremio Search catalog.
+- Multiple/split TPB manifests, one URL per line.
+- One **Save + apply now** action: providers are safely replaced in memory and CloudStream UI is refreshed; the plugin does not hot-reload its own `.cs3`.
+- Direct HTTP/HLS/MP4/DASH and debrid URLs with Stremio request headers/referer preserved.
+- Stremio `infoHash` + tracker sources converted to a CloudStream MAGNET link for TPB P2P fallback.
+- `posterShape` aware Home rows so landscape catalogs use CloudStream's horizontal-card layout.
+- Duplicate Home rows from split manifests are merged instead of one part hiding another.
+- Search pagination only when the manifest advertises the `skip` extra.
+- Stream/result deduplication and cleaner source/quality labels.
+- Five-minute manifest cache to reduce repeated manifest requests.
 
 ## Target
 
-The repository builds against `com.lagradost:cloudstream3:pre-release` and the plugin is marked beta-only (`status = 3`). Red/pre-release CloudStream is therefore the primary target.
+Built against `com.lagradost:cloudstream3:pre-release` and marked beta-only (`status = 3`). Use Red/pre-release CloudStream.
 
-## Security
+## Setup
 
-Never commit a configured TPB manifest URL to GitHub. A configured manifest path can contain encoded service credentials. TPBBridge stores manifest URLs only in CloudStream's local SharedPreferences.
+1. Install TPBBridge from this CloudStream repository.
+2. Open TPBBridge settings.
+3. Paste the TPB manifest URL(s), one per line.
+4. Choose a Home name and optionally a Search prefix.
+5. Press **Save + apply now**. No app restart is required.
+6. Select the combined Home provider for browsing. In CloudStream Search filters, select the automatically discovered per-source providers you want to search.
 
-## First device setup
+For a clean tube layout, enable `Recent` and `Search` for the desired TPB sources and leave `Studio`, `Tag`, and `Performer` off unless those catalogs are specifically wanted.
 
-1. Install TPBBridge from this repository in CloudStream pre-release.
-2. Open TPBBridge plugin settings.
-3. Paste all TPB split manifest URLs, one per line.
-4. Press **Discover sources + save**.
-5. Fully close and reopen CloudStream so the discovered per-source providers are registered.
-6. Select the combined TPB Home provider for browsing; use CloudStream global search for the separately named source providers.
+## Debrid and torrent behavior
 
-For the intended tube-only layout, keep `Recent` and `Search` enabled for each source and disable `Studio`, `Tag`, and `Performer` catalogs unless you specifically want those filtered catalogs.
+TPBBridge does not call a debrid API itself. TPB remains responsible for resolving TorBox/Real-Debrid/etc. If TPB returns a direct debrid URL, TPBBridge passes it to CloudStream with the required headers. If TPB instead returns an `infoHash` P2P fallback, TPBBridge builds a magnet link from the hash and Stremio tracker sources and lets CloudStream's torrent handling take over.
 
-## Scope
+Stremio `fileIdx` is parsed for deduplication, but CloudStream's `ExtractorLink` does not provide a stable Stremio-style file-index field. Exact multi-file torrent selection is therefore left to CloudStream's torrent handler; direct debrid URLs are the preferred path for exact-file playback.
 
-The first stable target is direct URL/HLS/MP4 tube playback. Raw `infoHash`/magnet playback is intentionally outside the initial scope. The TPB backend remains responsible for catalog, metadata, and stream resolution; TPBBridge is the CloudStream UI/protocol bridge.
+## Privacy and safety
+
+Configured manifest URLs stay in CloudStream local preferences and must never be committed to GitHub. TPBBridge also avoids exposing configured manifest URLs as provider `mainUrl` values or embedding them in new result/history payloads. Legacy v4 item payloads are accepted only when their exact manifest is still configured.
+
+The plugin intentionally does **not** invoke CloudStream's internal plugin hot-reload functions; current CloudStream source explicitly warns extensions not to do that because it can recurse, leak, or crash. Live settings application replaces only TPBBridge's registered providers and fires CloudStream's normal provider-refresh event.
 
 ## Attribution and license
 
-The Stremio-to-CloudStream protocol approach is derived from GPL bridge work by Hexated/phisher98 and compatible forks. TPBBridge is intended to be distributed under GPL-3.0-or-later. CloudStream's TestPlugins repository is used as the build template.
+Stremio-to-CloudStream protocol handling follows GPL bridge work by Hexated/phisher98 and compatible forks. TPBBridge is GPL-3.0-or-later. CloudStream TestPlugins is used as the build template.
