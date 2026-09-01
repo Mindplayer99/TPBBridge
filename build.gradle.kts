@@ -7,14 +7,16 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        // Shitpack repo which contains our tools and dependencies
+        // JitPack hosts the CloudStream Gradle plugin.
         maven("https://jitpack.io")
     }
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        // Cloudstream gradle plugin which makes everything work and builds plugins
-        classpath("com.github.recloudstream:gradle:-SNAPSHOT")
+        // Pin the CloudStream Gradle plugin to a known upstream commit instead
+        // of the moving -SNAPSHOT alias. This makes CI reproducible and avoids
+        // transient snapshot-resolution failures.
+        classpath("com.github.recloudstream:gradle:32895aedb6366f5075cb99bbd2e6ce0a7cac325d")
         // CloudStream pre-release is currently compiled with Kotlin 2.4 metadata.
         // Keep the plugin compiler on the latest compatible stable Kotlin line.
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.10")
