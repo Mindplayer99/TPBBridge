@@ -4,8 +4,8 @@
  * Reads configured Stremio/TPB manifests, keeps normal Recent catalogs together
  * in one Home provider, and exposes each Search catalog as its own CloudStream
  * provider. Optional switches add parent/all-source Search and TPB's required
- * Studio/Performer/Tag filter catalogs without polluting Home rows. Home rows can
- * also be reordered locally without touching stream/debrid behavior.
+ * Studio/Performer/Tag filter catalogs without polluting Home rows. Sources can
+ * be locally reordered or disabled without touching stream/debrid behavior.
  *
  * GPL-3.0-or-later. Stremio protocol handling is derived from the GPL bridge
  * approach used by Hexated/phisher98 and compatible forks.
@@ -56,6 +56,7 @@ class TPBBridgePlugin : Plugin() {
         val routeGroups = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
         val facetRoutes = loadFacetRoutes(prefs.getString(PREF_FACET_ROUTES, "").orEmpty())
         val homeOrder = loadHomeNameList(prefs.getString(PREF_HOME_ORDER, "").orEmpty())
+        val disabledSources = loadHomeNameList(prefs.getString(PREF_DISABLED_SOURCES, "").orEmpty())
 
         replaceProviders(
             bases = bases,
@@ -64,6 +65,7 @@ class TPBBridgePlugin : Plugin() {
             routeGroups = routeGroups,
             facetRoutes = facetRoutes,
             homeOrder = homeOrder,
+            disabledSources = disabledSources,
             parentSearch = prefs.getBoolean(PREF_PARENT_SEARCH, false),
             studioEnabled = prefs.getBoolean(PREF_FACET_STUDIO, false),
             performerEnabled = prefs.getBoolean(PREF_FACET_PERFORMER, false),
@@ -80,6 +82,7 @@ class TPBBridgePlugin : Plugin() {
         routeGroups: List<SearchRouteGroup>,
         facetRoutes: List<FacetRoute>,
         homeOrder: List<String>,
+        disabledSources: List<String>,
         parentSearch: Boolean,
         studioEnabled: Boolean,
         performerEnabled: Boolean,
@@ -96,18 +99,23 @@ class TPBBridgePlugin : Plugin() {
             }
         }
 
+        val disabledKeys = disabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
+        val activeSearchGroups = routeGroups.filter { homeSourceKey(it.sourceName) !in disabledKeys }
+        val activeFacetRoutes = facetRoutes.filter { homeSourceKey(it.sourceName) !in disabledKeys }
+
         if (bases.isNotEmpty()) {
             val home = TPBOrderedHomeProvider(
                 name = homeName,
                 manifestBases = bases,
-                searchGroups = routeGroups,
+                searchGroups = activeSearchGroups,
                 combinedSearchEnabled = parentSearch,
-                homeOrder = homeOrder
+                homeOrder = homeOrder,
+                disabledSources = disabledSources
             )
             registerMainAPI(home)
             registeredProviders += home
 
-            routeGroups.forEach { group ->
+            activeSearchGroups.forEach { group ->
                 if (group.routes.isNotEmpty()) {
                     val provider = TPBSearchProvider(
                         name = prefix + group.sourceName,
@@ -126,7 +134,7 @@ class TPBBridgePlugin : Plugin() {
             )
             enabledFacets.forEach { (kind, enabled) ->
                 if (!enabled) return@forEach
-                val routes = facetRoutes.filter { it.kind == kind }
+                val routes = activeFacetRoutes.filter { it.kind == kind }
                 if (routes.isEmpty()) return@forEach
                 val provider = TPBFacetProvider(
                     name = "$homeName • ${kind.label}",
@@ -179,11 +187,14 @@ class TPBBridgePlugin : Plugin() {
             isChecked = checked
             setPadding(0, dp(2), 0, dp(2))
         }
-        fun compactSummary(manifestCount: Int, searchCount: Int): String {
+        fun compactSummary(manifestCount: Int, sourceCount: Int, disabledCount: Int): String {
             if (manifestCount == 0) return "Not configured"
             val manifests = if (manifestCount == 1) "manifest" else "manifests"
-            val sources = if (searchCount == 1) "source" else "sources"
-            return "$manifestCount $manifests • $searchCount $sources"
+            val sources = if (sourceCount == 1) "source" else "sources"
+            return buildString {
+                append("$manifestCount $manifests • $sourceCount $sources")
+                if (disabledCount > 0) append(" • $disabledCount off")
+            }
         }
 
         val root = LinearLayout(activity).apply {
@@ -193,18 +204,25 @@ class TPBBridgePlugin : Plugin() {
 
         val currentRoutes = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
         val currentBases = parseManifestInput(prefs.getString(PREF_MANIFESTS, "").orEmpty())
-        var availableHomeSources = loadHomeNameList(prefs.getString(PREF_HOME_SOURCES, "").orEmpty())
+        var availableSources = loadHomeNameList(prefs.getString(PREF_HOME_SOURCES, "").orEmpty())
         var workingHomeOrder = reconcileHomeOrder(
             loadHomeNameList(prefs.getString(PREF_HOME_ORDER, "").orEmpty()),
-            availableHomeSources
+            availableSources
+        )
+        var workingDisabledSources = loadHomeNameList(
+            prefs.getString(PREF_DISABLED_SOURCES, "").orEmpty()
         )
         var hasSavedConfiguration = currentBases.isNotEmpty()
+
+        fun visibleDisabledCount(): Int = availableSources.count {
+            isSourceDisabled(it, workingDisabledSources)
+        }
 
         val summary = TextView(activity).apply {
             textSize = 13.5f
             alpha = 0.78f
             setPadding(0, 0, 0, dp(2))
-            text = compactSummary(currentBases.size, currentRoutes.size)
+            text = compactSummary(currentBases.size, currentRoutes.size, visibleDisabledCount())
         }
         root.addView(summary)
 
@@ -233,16 +251,16 @@ class TPBBridgePlugin : Plugin() {
         }
         root.addView(homeNameEdit)
 
-        val arrangeHome = Button(activity).apply {
-            text = "Arrange Home catalogues"
-            isEnabled = availableHomeSources.isNotEmpty()
+        val manageSources = Button(activity).apply {
+            text = "Manage sources"
+            isEnabled = availableSources.isNotEmpty()
         }
-        root.addView(arrangeHome)
-        val arrangeHint = helper(
-            if (availableHomeSources.isEmpty()) "Save + refresh once to discover Home rows"
-            else "Set which catalogue rows appear first"
+        root.addView(manageSources)
+        val manageHint = helper(
+            if (availableSources.isEmpty()) "Save + refresh once to discover sources"
+            else "Enable, disable, and arrange Home rows"
         )
-        root.addView(arrangeHint)
+        root.addView(manageHint)
 
         root.addView(label("Search prefix (optional)"))
         root.addView(helper("Leave blank for clean source names"))
@@ -259,7 +277,7 @@ class TPBBridgePlugin : Plugin() {
             prefs.getBoolean(PREF_PARENT_SEARCH, false)
         )
         root.addView(parentSearchSwitch)
-        root.addView(helper("Combine results from all discovered sources"))
+        root.addView(helper("Combine results from all enabled sources"))
         root.addView(warning("Selecting Home + individual sources together can show duplicate results."))
 
         root.addView(section("Extra filters"))
@@ -279,14 +297,17 @@ class TPBBridgePlugin : Plugin() {
         }
         root.addView(status)
 
-        arrangeHome.setOnClickListener {
-            showHomeCatalogueOrderDialog(
+        manageSources.setOnClickListener {
+            showHomeSourceManagerDialog(
                 activity = activity,
-                discoveredSources = availableHomeSources,
-                initialFullOrder = workingHomeOrder
-            ) { nextOrder ->
-                workingHomeOrder = nextOrder
-                status.text = "Home order changed • Save + refresh to apply"
+                discoveredSources = availableSources,
+                initialFullOrder = workingHomeOrder,
+                initialDisabledSources = workingDisabledSources
+            ) { result ->
+                workingHomeOrder = result.fullOrder
+                workingDisabledSources = result.disabledSources
+                summary.text = compactSummary(currentBases.size, currentRoutes.size, visibleDisabledCount())
+                status.text = "Source settings changed • Save + refresh to apply"
             }
         }
 
@@ -330,17 +351,19 @@ class TPBBridgePlugin : Plugin() {
                         .remove(PREF_FACET_ROUTES)
                         .remove(PREF_HOME_SOURCES)
                         .remove(PREF_HOME_ORDER)
+                        .remove(PREF_DISABLED_SOURCES)
                         .apply()
                     invalidateManifestCache()
                     replaceProviders(
-                        emptyList(), homeName, prefix, emptyList(), emptyList(), emptyList(),
+                        emptyList(), homeName, prefix, emptyList(), emptyList(), emptyList(), emptyList(),
                         parentSearch, studioEnabled, performerEnabled, tagEnabled,
                         notifyUi = true
                     )
-                    availableHomeSources = emptyList()
+                    availableSources = emptyList()
                     workingHomeOrder = emptyList()
-                    arrangeHome.isEnabled = false
-                    arrangeHint.text = "Save + refresh once to discover Home rows"
+                    workingDisabledSources = emptyList()
+                    manageSources.isEnabled = false
+                    manageHint.text = "Save + refresh once to discover sources"
                     hasSavedConfiguration = false
                     summary.text = "Not configured"
                     status.text = "Cleared."
@@ -369,10 +392,18 @@ class TPBBridgePlugin : Plugin() {
                     val discoveredHomeSources = try {
                         discoverHomeSources(bases)
                     } catch (_: Throwable) {
-                        discovered.searchGroups.map { it.sourceName }
-                            .distinctBy(::homeSourceKey)
+                        emptyList()
                     }
-                    val nextHomeOrder = reconcileHomeOrder(workingHomeOrder, discoveredHomeSources)
+                    val discoveredSources = managedSourceList(
+                        discoveredHomeSources,
+                        discovered.searchGroups,
+                        discovered.facetRoutes
+                    )
+                    val nextHomeOrder = reconcileHomeOrder(workingHomeOrder, discoveredSources)
+                    val nextDisabledSources = workingDisabledSources
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                        .distinctBy(::homeSourceKey)
 
                     prefs.edit()
                         .putString(PREF_MANIFESTS, raw)
@@ -380,8 +411,9 @@ class TPBBridgePlugin : Plugin() {
                         .putString(PREF_SEARCH_PREFIX, prefix)
                         .putString(PREF_ROUTES, saveRouteGroups(discovered.searchGroups))
                         .putString(PREF_FACET_ROUTES, saveFacetRoutes(discovered.facetRoutes))
-                        .putString(PREF_HOME_SOURCES, saveHomeNameList(discoveredHomeSources))
+                        .putString(PREF_HOME_SOURCES, saveHomeNameList(discoveredSources))
                         .putString(PREF_HOME_ORDER, saveHomeNameList(nextHomeOrder))
+                        .putString(PREF_DISABLED_SOURCES, saveHomeNameList(nextDisabledSources))
                         .putBoolean(PREF_PARENT_SEARCH, parentSearch)
                         .putBoolean(PREF_FACET_STUDIO, studioEnabled)
                         .putBoolean(PREF_FACET_PERFORMER, performerEnabled)
@@ -397,6 +429,7 @@ class TPBBridgePlugin : Plugin() {
                             routeGroups = discovered.searchGroups,
                             facetRoutes = discovered.facetRoutes,
                             homeOrder = nextHomeOrder,
+                            disabledSources = nextDisabledSources,
                             parentSearch = parentSearch,
                             studioEnabled = studioEnabled,
                             performerEnabled = performerEnabled,
@@ -404,42 +437,52 @@ class TPBBridgePlugin : Plugin() {
                             notifyUi = true
                         )
                         apply.isEnabled = true
-                        availableHomeSources = discoveredHomeSources
+                        availableSources = discoveredSources
                         workingHomeOrder = nextHomeOrder
-                        arrangeHome.isEnabled = availableHomeSources.isNotEmpty()
-                        arrangeHint.text = if (availableHomeSources.isEmpty()) {
-                            "Save + refresh once to discover Home rows"
+                        workingDisabledSources = nextDisabledSources
+                        manageSources.isEnabled = availableSources.isNotEmpty()
+                        manageHint.text = if (availableSources.isEmpty()) {
+                            "Save + refresh once to discover sources"
                         } else {
-                            "Set which catalogue rows appear first"
+                            "Enable, disable, and arrange Home rows"
                         }
                         hasSavedConfiguration = true
-                        summary.text = compactSummary(bases.size, discovered.searchGroups.size)
 
-                        fun count(kind: FacetKind): Int = discovered.facetRoutes
-                            .filter { it.kind == kind }
+                        val disabledKeys = nextDisabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
+                        val enabledSearchCount = discovered.searchGroups.count {
+                            homeSourceKey(it.sourceName) !in disabledKeys
+                        }
+                        val enabledDisabledCount = discoveredSources.count {
+                            homeSourceKey(it) in disabledKeys
+                        }
+                        summary.text = compactSummary(bases.size, enabledSearchCount, enabledDisabledCount)
+
+                        fun countEnabled(kind: FacetKind): Int = discovered.facetRoutes
+                            .filter { it.kind == kind && homeSourceKey(it.sourceName) !in disabledKeys }
                             .map { it.sourceName.lowercase() }
                             .distinct()
                             .size
 
                         val warnings = mutableListOf<String>()
-                        if (discoveredHomeSources.isEmpty()) {
-                            warnings += "No Home catalogues found; enable Recent in TPB."
+                        if (discoveredSources.isEmpty()) {
+                            warnings += "No sources found; enable Recent or Search in TPB."
                         }
                         if (discovered.searchGroups.isEmpty()) {
                             warnings += "No Search catalogs found; enable Search in TPB."
                         }
-                        if (studioEnabled && count(FacetKind.STUDIO) == 0) {
-                            warnings += "Studio is ON but unavailable in this manifest."
+                        if (studioEnabled && countEnabled(FacetKind.STUDIO) == 0) {
+                            warnings += "Studio is ON but unavailable for enabled sources."
                         }
-                        if (performerEnabled && count(FacetKind.PERFORMER) == 0) {
-                            warnings += "Performer is ON but unavailable in this manifest."
+                        if (performerEnabled && countEnabled(FacetKind.PERFORMER) == 0) {
+                            warnings += "Performer is ON but unavailable for enabled sources."
                         }
-                        if (tagEnabled && count(FacetKind.TAG) == 0) {
-                            warnings += "Tag is ON but unavailable in this manifest."
+                        if (tagEnabled && countEnabled(FacetKind.TAG) == 0) {
+                            warnings += "Tag is ON but unavailable for enabled sources."
                         }
 
                         status.text = buildString {
-                            append("Saved • ${discovered.searchGroups.size} sources")
+                            append("Saved • $enabledSearchCount active sources")
+                            if (enabledDisabledCount > 0) append(" • $enabledDisabledCount off")
                             if (warnings.isNotEmpty()) {
                                 append("\n⚠ ")
                                 append(warnings.joinToString(" "))
