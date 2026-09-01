@@ -2,15 +2,16 @@
 
 CloudStream pre-release bridge for Stremio-compatible TPB manifests.
 
-## What v6 does
+## What v8 does
 
 - One combined Home provider with clean per-source Recent rows (for example `Hotleak`, not `Hotleak · Recent`).
+- **Custom Home catalogue ordering** with simple up/down controls. Ordering is stored locally, duplicate source rows remain merged, newly discovered sources are appended, and temporarily unavailable sources keep their remembered position.
 - One search-only CloudStream provider per discovered Stremio Search catalog.
 - Optional **Search all sources through the Home name** switch. When enabled, selecting the parent/Home provider in CloudStream Search fans out across every discovered source Search catalog.
 - Optional **Studio**, **Performer**, and **Tag** switches. These create search-only filter providers such as `Valley • Studio`; they never create Studio/Performer/Tag Home rows.
 - Filter search uses only option values TPB advertises in each required `genre` catalog. Exact matches are preferred; narrow partial matches are supported with a bounded fanout.
 - Multiple/split TPB manifests, one URL per line, with exact duplicate manifest URLs removed automatically.
-- One **Save + apply now** action: Search and filter routes are re-discovered and providers are safely replaced in memory; the plugin does not hot-reload its own `.cs3`.
+- One **Save + refresh** action: Search/filter/Home routes are re-discovered and providers are safely replaced in memory; the plugin does not hot-reload its own `.cs3`.
 - Direct HTTP/HLS/MP4/DASH and debrid URLs with Stremio request headers/referer preserved.
 - Stremio `infoHash` + tracker sources converted to a CloudStream MAGNET link for TPB P2P fallback.
 - `posterShape` aware Home rows so landscape catalogs use CloudStream's horizontal-card layout.
@@ -30,14 +31,21 @@ Built against `com.lagradost:cloudstream3:pre-release` and marked beta-only (`st
 3. Paste the TPB manifest URL(s), one per line.
 4. Choose a Home name and optionally a Search prefix.
 5. Optionally enable parent/all-source Search and/or Studio/Performer/Tag filter search.
-6. Press **Save + apply now**. No app restart is required.
-7. Select the combined Home provider for browsing. In CloudStream Search filters, select either the parent provider (if parent Search is enabled), individual source providers, or one of the optional filter providers.
+6. Press **Save + refresh**. No app restart is required.
+7. After the first v8 refresh, use **Arrange Home catalogues** to move Home rows up/down. Press **Save + refresh** again to apply the chosen order.
+8. Select the combined Home provider for browsing. In CloudStream Search filters, select either the parent provider (if parent Search is enabled), individual source providers, or one of the optional filter providers.
 
 For a clean tube Home layout, `Recent` should be enabled in TPB. Per-source Search requires `Search` enabled in TPB. Optional Studio/Performer/Tag support requires those catalogs to be enabled in TPB too, but TPBBridge keeps them out of Home so they cannot recreate the old duplicate-row layout.
 
+## Home catalogue ordering
+
+Ordering changes only the sequence of Home rows sent to CloudStream. It does not touch catalog contents, metadata, stream resolution, debrid, headers, subtitles, or playback.
+
+The ordering system uses normalized source names as stable local keys. Same-source rows from split manifests are merged before ordering, so one source has one position. New sources are appended without overwriting the user's existing order. A temporarily unavailable source remains in the saved order and returns to its remembered position when it reappears. **Reset to default** restores the current manifest Home order.
+
 ## Optional filter behavior
 
-TPB currently exposes tube Studio/Performer/Tag catalogs as required Stremio `genre` catalogs with stable `_studio`, `_performer`, and `_tag` ids and an advertised option list. TPBBridge v6 discovers only those exact filter families. It does not treat arbitrary Stremio genre catalogs as Studio/Performer/Tag.
+TPB currently exposes tube Studio/Performer/Tag catalogs as required Stremio `genre` catalogs with stable `_studio`, `_performer`, and `_tag` ids and an advertised option list. TPBBridge discovers only those exact filter families. It does not treat arbitrary Stremio genre catalogs as Studio/Performer/Tag.
 
 When a filter provider is enabled, the text typed in CloudStream Search is matched against TPB's advertised options. An exact match is used directly. Partial matching is deliberately bounded so a broad one-letter query cannot explode into hundreds of upstream requests.
 
