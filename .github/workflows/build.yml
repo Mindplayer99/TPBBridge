@@ -59,6 +59,10 @@ jobs:
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
           cp build/plugins.json $GITHUB_WORKSPACE/builds
 
+      - name: Public TPB protocol smoke test
+        continue-on-error: true
+        run: python3 $GITHUB_WORKSPACE/src/scripts/tpb_protocol_smoke.py
+
       - name: Publish builds branch
         if: github.event_name != 'pull_request'
         run: |
