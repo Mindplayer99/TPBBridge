@@ -486,7 +486,7 @@ internal data class Stream(
         return false
     }
 
-    internal fun emitSubtitles(subtitleCallback: (SubtitleFile) -> Unit) {
+    internal suspend fun emitSubtitles(subtitleCallback: (SubtitleFile) -> Unit) {
         subtitles.distinctBy { it.url }.forEach { sub ->
             val subUrl = sub.url?.takeIf { it.isNotBlank() } ?: return@forEach
             val label = SubtitleHelper.fromTagToEnglishLanguageName(sub.lang ?: "")
