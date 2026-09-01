@@ -2,32 +2,48 @@
 """Credential-free smoke test for the public TPB Stremio protocol.
 
 It validates only protocol shape used by TPBBridge: manifest -> recent catalog ->
-meta -> stream. It never prints media titles or stream URLs.
+meta -> stream. It never prints media titles, stream URLs, or credentials.
 """
 from __future__ import annotations
 
 import base64
 import json
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 HOST = "https://tpb-adult-addon.click"
 TIMEOUT = 35
+ATTEMPTS = 3
 
 
 def get_json(url: str) -> dict:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "TPBBridge-CI/1.0",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
-        if response.status < 200 or response.status >= 300:
-            raise RuntimeError(f"HTTP {response.status}")
-        return json.loads(response.read().decode("utf-8"))
+    last_error: Exception | None = None
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "TPBBridge-CI/1.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+                if response.status < 200 or response.status >= 300:
+                    raise RuntimeError(f"HTTP {response.status}")
+                value = json.loads(response.read().decode("utf-8"))
+                if not isinstance(value, dict):
+                    raise RuntimeError("response is not a JSON object")
+                return value
+        except (urllib.error.URLError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt == ATTEMPTS:
+                break
+            time.sleep(attempt * 2)
+    assert last_error is not None
+    raise last_error
 
 
 def enc_path(value: str) -> str:
@@ -36,7 +52,7 @@ def enc_path(value: str) -> str:
 
 def main() -> int:
     # No API/debrid keys. yesporn is a direct-play tube source supported by the
-    # public TPB backend source. A tiny result limit keeps CI traffic minimal.
+    # public TPB backend. A tiny result limit keeps CI traffic minimal.
     config = {
         "sources": ["yesporn"],
         "maxResults": 2,
@@ -82,13 +98,15 @@ def main() -> int:
     if not (meta.get("meta") or (meta.get("metas") or [])):
         raise RuntimeError("meta endpoint returned no metadata")
 
-    streams = get_json(f"{base}/stream/{enc_path(item_type)}/{enc_path(item_id)}.json").get("streams") or []
+    stream_response = get_json(f"{base}/stream/{enc_path(item_type)}/{enc_path(item_id)}.json")
+    streams = stream_response.get("streams") or []
     if not streams:
         raise RuntimeError("stream endpoint returned zero streams")
 
-    direct = [s for s in streams if s.get("url")]
-    if not direct:
-        raise RuntimeError("stream endpoint returned no direct URL stream")
+    direct = [s for s in streams if isinstance(s, dict) and s.get("url")]
+    p2p = [s for s in streams if isinstance(s, dict) and s.get("infoHash")]
+    if not direct and not p2p:
+        raise RuntimeError("stream endpoint returned neither direct URL nor infoHash stream")
 
     headers_present = any(
         ((s.get("behaviorHints") or {}).get("proxyHeaders") or {}).get("request")
@@ -102,6 +120,8 @@ def main() -> int:
         f"catalog={cat_id}",
         f"metas={len(metas)}",
         f"streams={len(streams)}",
+        f"direct={len(direct)}",
+        f"p2p={len(p2p)}",
         f"proxy_headers={bool(headers_present)}",
     )
     return 0
