@@ -53,22 +53,63 @@ jobs:
 
       - name: Build plugins
         run: |
+          set -euo pipefail
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
           ./gradlew make makePluginsJson
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
           cp build/plugins.json $GITHUB_WORKSPACE/builds
 
+      - name: Verify generated artifact integrity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["GITHUB_WORKSPACE"]) / "builds"
+          plugin = root / "TPBBridge.cs3"
+          manifest = root / "plugins.json"
+          if not plugin.is_file() or plugin.stat().st_size <= 0:
+              raise SystemExit("TPBBridge.cs3 missing or empty")
+          if not manifest.is_file() or manifest.stat().st_size <= 0:
+              raise SystemExit("plugins.json missing or empty")
+
+          entries = json.loads(manifest.read_text(encoding="utf-8"))
+          entry = next((x for x in entries if x.get("internalName") == "TPBBridge"), None)
+          if entry is None:
+              raise SystemExit("TPBBridge entry missing from plugins.json")
+
+          actual_size = plugin.stat().st_size
+          if int(entry.get("fileSize", -1)) != actual_size:
+              raise SystemExit(f"fileSize mismatch: json={entry.get('fileSize')} actual={actual_size}")
+
+          actual_hash = "sha256-" + hashlib.sha256(plugin.read_bytes()).hexdigest()
+          if entry.get("fileHash") != actual_hash:
+              raise SystemExit("fileHash mismatch for TPBBridge.cs3")
+
+          if int(entry.get("version", 0)) < 1:
+              raise SystemExit("invalid TPBBridge version in plugins.json")
+
+          print(f"Artifact integrity OK: version={entry['version']} size={actual_size} hash={actual_hash}")
+          PY
+
       - name: Public TPB protocol smoke test
-        continue-on-error: true
         run: python3 $GITHUB_WORKSPACE/src/scripts/tpb_protocol_smoke.py
 
       - name: Publish builds branch
         if: github.event_name != 'pull_request'
         run: |
+          set -euo pipefail
           cd $GITHUB_WORKSPACE/builds
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git add .
-          git commit --amend -m "Build $GITHUB_SHA" || exit 0
-          git push --force
+          if git diff --cached --quiet; then
+            echo "No build changes to publish"
+          else
+            git commit --amend -m "Build $GITHUB_SHA"
+            git push --force
+          fi
