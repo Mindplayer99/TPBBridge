@@ -1,8 +1,8 @@
 /*
- * TPBBridge - Home catalogue ordering support.
+ * TPBBridge - Home catalogue ordering and source enable/disable support.
  *
- * This file is intentionally isolated from stream/debrid handling. It only
- * controls Home-row discovery, ordering, and the small ordering dialog.
+ * This file is intentionally isolated from stream/debrid handling. It controls
+ * source discovery, Home-row ordering, source filtering, and the management UI.
  *
  * GPL-3.0-or-later.
  */
@@ -13,6 +13,7 @@ import android.app.AlertDialog
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -32,6 +33,7 @@ import java.util.Locale
 
 internal const val PREF_HOME_SOURCES = "home_sources_v8"
 internal const val PREF_HOME_ORDER = "home_order_v8"
+internal const val PREF_DISABLED_SOURCES = "disabled_sources_v9"
 
 internal fun homeSourceKey(name: String): String =
     name.trim().lowercase(Locale.ROOT)
@@ -59,6 +61,11 @@ internal fun loadHomeNameList(json: String): List<String> {
     } catch (_: Throwable) {
         emptyList()
     }
+}
+
+internal fun isSourceDisabled(source: String, disabledSources: Collection<String>): Boolean {
+    val key = homeSourceKey(source)
+    return disabledSources.any { homeSourceKey(it) == key }
 }
 
 /**
@@ -98,6 +105,22 @@ internal fun discoverHomeSources(bases: List<String>): List<String> {
 }
 
 /**
+ * Build the complete manageable source list. Home sources stay first in manifest
+ * order; search/filter-only sources are appended so they can also be disabled.
+ */
+internal fun managedSourceList(
+    homeSources: List<String>,
+    searchGroups: List<SearchRouteGroup>,
+    facetRoutes: List<FacetRoute>
+): List<String> = buildList {
+    addAll(homeSources)
+    addAll(searchGroups.map { it.sourceName })
+    addAll(facetRoutes.map { it.sourceName })
+}.map { it.trim() }
+    .filter { it.isNotBlank() }
+    .distinctBy(::homeSourceKey)
+
+/**
  * Keeps the user's complete saved order, including temporarily unavailable
  * sources, and appends genuinely new sources at the bottom.
  */
@@ -123,7 +146,7 @@ internal fun reconcileHomeOrder(
     return out
 }
 
-/** Current visible sources, rendered in the user's saved order. */
+/** Current visible/manageable sources, rendered in the user's saved order. */
 internal fun visibleHomeOrder(
     fullOrder: List<String>,
     discoveredSources: List<String>
@@ -171,6 +194,33 @@ internal fun mergeVisibleHomeOrder(
     return out.distinctBy(::homeSourceKey)
 }
 
+/**
+ * Update enable/disable state only for currently manageable sources while
+ * retaining the state of temporarily unavailable sources.
+ */
+internal fun mergeVisibleDisabledSources(
+    fullDisabled: List<String>,
+    discoveredSources: List<String>,
+    visibleDisabled: Collection<String>
+): List<String> {
+    val visibleKeys = discoveredSources
+        .map { homeSourceKey(it) }
+        .toSet()
+    val out = fullDisabled
+        .map { it.trim() }
+        .filter { it.isNotBlank() && homeSourceKey(it) !in visibleKeys }
+        .distinctBy(::homeSourceKey)
+        .toMutableList()
+
+    visibleDisabled
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy(::homeSourceKey)
+        .forEach { out += it }
+
+    return out.distinctBy(::homeSourceKey)
+}
+
 internal fun orderHomeRows(rows: Collection<HomeRow>, homeOrder: List<String>): List<HomeRow> {
     if (rows.size < 2 || homeOrder.isEmpty()) return rows.toList()
     val rank = homeOrder
@@ -187,16 +237,16 @@ internal fun orderHomeRows(rows: Collection<HomeRow>, homeOrder: List<String>): 
 }
 
 /**
- * v8 Home provider. The only difference from the existing unified provider is
- * that merged Home rows are ordered immediately before CloudStream receives
- * them. Search behavior is intentionally kept identical to v7.
+ * v9 Home provider. Disabled sources are removed before Home catalog network
+ * requests. Search groups passed here are already filtered by the plugin.
  */
 internal class TPBOrderedHomeProvider(
     override var name: String,
     internal val manifestBases: List<String>,
     internal val searchGroups: List<SearchRouteGroup>,
     internal val combinedSearchEnabled: Boolean,
-    internal val homeOrder: List<String>
+    internal val homeOrder: List<String>,
+    internal val disabledSources: List<String>
 ) : TPBBaseProvider(manifestBases) {
     override var mainUrl: String = "$SAFE_MAIN_URL/home"
     override var lang: String = "en"
@@ -204,11 +254,17 @@ internal class TPBOrderedHomeProvider(
     override val hasMainPage = true
     override val searchTimeoutMs: Long? = 90_000L
 
+    private val disabledKeys = disabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val rows = manifestBases.amap { base ->
             val manifest = fetchManifest(base) ?: return@amap emptyList<HomeRow>()
             manifest.catalogs
-                .filter { it.isHomeCatalog() }
+                .filter { catalog ->
+                    if (!catalog.isHomeCatalog()) return@filter false
+                    val source = deriveSourceName(catalog.name, catalog.id)
+                    homeSourceKey(source) !in disabledKeys
+                }
                 .amap { catalog -> catalog.toHomeRow(base, this, page) }
                 .filter { it.items.isNotEmpty() }
         }.flatten()
@@ -285,11 +341,17 @@ internal class TPBOrderedHomeProvider(
     }
 }
 
-internal fun showHomeCatalogueOrderDialog(
+internal data class HomeSourceManagementResult(
+    val fullOrder: List<String>,
+    val disabledSources: List<String>
+)
+
+internal fun showHomeSourceManagerDialog(
     activity: Activity,
     discoveredSources: List<String>,
     initialFullOrder: List<String>,
-    onDone: (List<String>) -> Unit
+    initialDisabledSources: List<String>,
+    onDone: (HomeSourceManagementResult) -> Unit
 ) {
     fun dp(v: Int): Int = (v * activity.resources.displayMetrics.density).toInt()
 
@@ -300,14 +362,15 @@ internal fun showHomeCatalogueOrderDialog(
 
     if (defaults.isEmpty()) {
         AlertDialog.Builder(activity)
-            .setTitle("Home catalogue order")
-            .setMessage("No Home catalogues are available yet. Save + refresh once after enabling Recent in TPB.")
+            .setTitle("Manage sources")
+            .setMessage("No sources are available yet. Save + refresh once after enabling Recent or Search in TPB.")
             .setPositiveButton("OK", null)
             .show()
         return
     }
 
     var working = visibleHomeOrder(initialFullOrder, defaults).toMutableList()
+    val disabledKeys = initialDisabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
     val container = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(12), dp(4), dp(12), dp(8))
@@ -316,9 +379,9 @@ internal fun showHomeCatalogueOrderDialog(
     fun render() {
         container.removeAllViews()
         container.addView(TextView(activity).apply {
-            text = "Top = first row on Home"
+            text = "Off hides a source from Home and all TPBBridge searches. Order controls Home rows."
             textSize = 13f
-            alpha = 0.72f
+            alpha = 0.76f
             setPadding(0, 0, 0, dp(8))
         })
 
@@ -329,12 +392,18 @@ internal fun showHomeCatalogueOrderDialog(
                 setPadding(0, dp(2), 0, dp(2))
             }
 
+            val enabled = CheckBox(activity).apply {
+                text = "${index + 1}. $source"
+                textSize = 16f
+                isChecked = homeSourceKey(source) !in disabledKeys
+                setPadding(dp(2), 0, dp(6), 0)
+                setOnCheckedChangeListener { _, checked ->
+                    val key = homeSourceKey(source)
+                    if (checked) disabledKeys.remove(key) else disabledKeys.add(key)
+                }
+            }
             row.addView(
-                TextView(activity).apply {
-                    text = "${index + 1}. $source"
-                    textSize = 16f
-                    setPadding(dp(2), 0, dp(6), 0)
-                },
+                enabled,
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             )
 
@@ -374,7 +443,7 @@ internal fun showHomeCatalogueOrderDialog(
         }
 
         container.addView(Button(activity).apply {
-            text = "Reset to default"
+            text = "Reset order"
             setOnClickListener {
                 working = defaults.toMutableList()
                 render()
@@ -385,11 +454,21 @@ internal fun showHomeCatalogueOrderDialog(
     render()
     val scroll = ScrollView(activity).apply { addView(container) }
     AlertDialog.Builder(activity)
-        .setTitle("Home catalogue order")
+        .setTitle("Manage sources")
         .setView(scroll)
         .setNegativeButton("Cancel", null)
         .setPositiveButton("Done") { _, _ ->
-            onDone(mergeVisibleHomeOrder(initialFullOrder, working, defaults))
+            val visibleDisabled = defaults.filter { homeSourceKey(it) in disabledKeys }
+            onDone(
+                HomeSourceManagementResult(
+                    fullOrder = mergeVisibleHomeOrder(initialFullOrder, working, defaults),
+                    disabledSources = mergeVisibleDisabledSources(
+                        initialDisabledSources,
+                        defaults,
+                        visibleDisabled
+                    )
+                )
+            )
         }
         .show()
 }
