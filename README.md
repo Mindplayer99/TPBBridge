@@ -1,74 +1,109 @@
 # TPBBridge
 
-CloudStream pre-release bridge for Stremio-compatible TPB manifests.
+CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
-## What v9 does
+## v11: independent profiles
 
-- One combined Home provider with clean per-source Recent rows (for example `Hotleak`, not `Hotleak · Recent`).
-- **Source management:** each discovered source can be enabled/disabled locally. Disabled sources are removed before Home catalogue requests and before Search/filter provider registration, so a broken source does not clutter or slow normal TPBBridge browsing/search.
-- **Custom Home catalogue ordering** with simple up/down controls. Ordering is stored locally, duplicate source rows remain merged, newly discovered sources are appended, and temporarily unavailable sources keep their remembered position.
-- Disabled state is reversible and remembered independently from order. Resetting order does not re-enable disabled sources.
-- One search-only CloudStream provider per enabled discovered Stremio Search catalog.
-- Optional **Search all sources through the Home name** switch. When enabled, selecting the parent/Home provider in CloudStream Search fans out across every enabled source Search catalog.
-- Optional **Studio**, **Performer**, and **Tag** switches. These create search-only filter providers such as `Valley • Studio`; disabled sources are excluded and these filters never create Studio/Performer/Tag Home rows.
-- Filter search uses only option values TPB advertises in each required `genre` catalog. Exact matches are preferred; narrow partial matches are supported with a bounded fanout.
-- Multiple/split TPB manifests, one URL per line, with exact duplicate manifest URLs removed automatically.
-- One **Save + refresh** action: Search/filter/Home routes are re-discovered and providers are safely replaced in memory; the plugin does not hot-reload its own `.cs3`.
-- Direct HTTP/HLS/MP4/DASH and debrid URLs with Stremio request headers/referer preserved.
-- Stremio `infoHash` + tracker sources converted to a CloudStream MAGNET link for TPB P2P fallback.
-- `posterShape` aware Home rows so landscape catalogs use CloudStream's horizontal-card layout.
-- Duplicate Home rows from split manifests are merged instead of one part hiding another.
-- Search pagination only when the manifest advertises the `skip` extra.
-- Stream/result deduplication and cleaner source/quality labels.
-- Five-minute manifest cache to reduce repeated manifest requests.
+TPBBridge can now keep different manifest groups completely separate without duplicating the playback engine.
 
-## Target
+A **profile** contains one or more manifest URLs and owns only its browsing/search configuration:
 
-Built against `com.lagradost:cloudstream3:pre-release` and marked beta-only (`status = 3`). Use Red/pre-release CloudStream.
+- Home provider name
+- optional Search prefix
+- discovered sources
+- source enable/disable state
+- Home catalogue order
+- optional combined Search through that profile's Home name
+- optional Studio / Performer / Tag search providers
+
+This means one setup can be `Valley` while another can be `Archive`, each with different manifests, source order, disabled sources, Search prefix and filter settings. Sources with the same name in different profiles do not share routes or enable/disable state.
+
+Several split manifest URLs can still be placed inside one profile when they are meant to behave as one setup. Same-source rows/routes inside that profile retain the existing TPBBridge merge/deduplication behavior.
+
+### Automatic v10 migration
+
+On first v11 load, an existing v10 configuration is converted into exactly one profile. The migration preserves the existing manifest input, Home name, Search prefix, discovered routes, Home order, disabled-source state and optional Search/filter toggles. The v11 profile is committed before legacy keys are removed.
+
+Profile state also keeps one last known-good local backup. A valid current profile list always wins—including an intentionally empty list—so removing profiles cannot accidentally resurrect them from the backup.
 
 ## Setup
 
-1. Install TPBBridge from this CloudStream repository.
+1. Install/update TPBBridge from the existing CloudStream repository.
 2. Open TPBBridge settings.
-3. Paste the TPB manifest URL(s), one per line.
-4. Choose a Home name and optionally a Search prefix.
-5. Optionally enable parent/all-source Search and/or Studio/Performer/Tag filter search.
-6. Press **Save + refresh**. No app restart is required.
-7. Open **Manage sources** to enable/disable sources and move Home rows up/down. Press **Save + refresh** to apply the changes.
-8. Select the combined Home provider for browsing. In CloudStream Search filters, select either the parent provider (if parent Search is enabled), individual source providers, or one of the optional filter providers.
+3. Tap **+ Add profile**.
+4. Paste one or more manifest URLs, one per line. Put split manifests in the same profile only when they should share one Home/Search setup.
+5. Choose that profile's **Home name** and optional **Search prefix**.
+6. Optionally enable combined Home-name Search and/or Studio / Performer / Tag.
+7. Tap **Save + refresh**. The profile is discovered and registered without restarting CloudStream.
+8. Reopen the profile and use **Manage sources** to enable/disable sources or move Home rows up/down, then **Save + refresh**.
+9. Add more profiles when you want another independent manifest group.
 
-For a clean tube Home layout, `Recent` should be enabled in TPB. Per-source Search requires `Search` enabled in TPB. Optional Studio/Performer/Tag support requires those catalogs to be enabled in TPB too, but TPBBridge keeps them out of Home so they cannot recreate the old duplicate-row layout.
+Saving one profile fetches/discovers only that profile's manifests. Other profiles keep their already-saved route/source configuration and are not rediscovered.
 
-## Source management and Home ordering
+## Home and source management
+
+Each profile gets one combined Home provider. Normal Recent catalogues become clean per-source rows. Required-extra Studio/Performer/Tag catalogues stay out of Home.
 
 The source manager controls two independent things:
 
-- **On/Off:** turning a source off removes its Home row, its individual Search provider, its contribution to combined Home-name Search, and its routes from Studio/Performer/Tag aggregate searches. Home catalogs for that disabled source are filtered before their content endpoint is requested.
-- **Order:** up/down changes only the sequence of Home rows sent to CloudStream. It does not touch catalog contents, metadata, stream resolution, debrid, headers, subtitles, or playback.
+- **On/Off:** a disabled source is removed before its Home catalogue request and before individual Search, combined Search, and facet-provider registration.
+- **Order:** up/down controls only the sequence of Home rows; it does not alter metadata, stream resolution, debrid, headers, subtitles or playback.
 
-Source state uses normalized source names as local keys. Same-source rows from split manifests are merged before ordering, so one source has one position/state. New sources are enabled by default and appended without overwriting the existing order. A temporarily unavailable source keeps both its remembered position and disabled state, so it returns consistently if it later reappears. **Reset order** changes positions only; it never re-enables disabled sources.
+Source ordering keeps temporarily unavailable sources in their remembered slots. Newly discovered sources are enabled by default and appended. Resetting order does not re-enable disabled sources.
 
-Disabling a source does not rewrite the remote TPB manifest and does not erase old CloudStream history/bookmarks already stored by the app. It only stops TPBBridge from exposing/requesting that source through its active Home/Search/filter surfaces. Permanent removal from the upstream manifest should be done in TPB itself.
+Within one profile, same-name sources from split manifests are merged as before. Across different profiles, they remain independent. When two providers would otherwise have exactly the same visible CloudStream name, TPBBridge adds a profile label to avoid a provider-name collision.
 
-## Optional filter behavior
+## Search
 
-TPB currently exposes tube Studio/Performer/Tag catalogs as required Stremio `genre` catalogs with stable `_studio`, `_performer`, and `_tag` ids and an advertised option list. TPBBridge discovers only those exact filter families. It does not treat arbitrary Stremio genre catalogs as Studio/Performer/Tag.
+Every enabled discovered Search catalogue becomes an individual CloudStream Search provider for that profile. The profile's optional prefix is applied only to those individual providers.
 
-When a filter provider is enabled, the text typed in CloudStream Search is matched against TPB's advertised options. An exact match is used directly. Partial matching is deliberately bounded so a broad one-letter query cannot explode into hundreds of upstream requests.
+**Search through Home name** adds an aggregate Search path to that profile's Home provider. It fans out only across that profile's enabled source routes, uses `skip` only when the manifest advertises it, isolates individual route failures, and deduplicates merged results.
 
-## Debrid and torrent behavior
+Studio / Performer / Tag remain optional Search-only providers. They use only the option lists advertised by TPB. Exact matches are preferred and fuzzy fan-out is bounded to avoid exploding broad queries into hundreds of requests.
 
-TPBBridge does not call a debrid API itself. TPB remains responsible for resolving TorBox/Real-Debrid/etc. If TPB returns a direct debrid URL, TPBBridge passes it to CloudStream with the required headers. If TPB instead returns an `infoHash` P2P fallback, TPBBridge builds a magnet link from the hash and Stremio tracker sources and lets CloudStream's torrent handling take over.
+Selecting a profile's combined Home Search and its individual source providers at the same time can intentionally show duplicate results because CloudStream is being asked to search the same source through two paths.
 
-TPBBridge preserves TPB's stream name/quality information when creating CloudStream mirrors. Cache-state icons or labels are therefore only reliable when TPB itself includes that state in the Stremio stream object; TPBBridge does not invent a cached/uncached badge from a direct URL.
+## Playback and protocol behavior
 
-Stremio `fileIdx` is parsed for deduplication, but CloudStream's `ExtractorLink` does not provide a stable Stremio-style file-index field. Exact multi-file torrent selection is therefore left to CloudStream's torrent handler; direct debrid URLs are the preferred path for exact-file playback.
+v11 does **not** create separate playback engines per profile. The existing shared bridge core remains responsible for all profiles:
 
-## Privacy and safety
+- Stremio metadata and catalogue fallback
+- `/stream/<type>/<id>.json`
+- direct HTTP/HLS/MP4/DASH links
+- TPB-resolved debrid links
+- request headers, proxy request headers and Referer
+- quality mapping
+- subtitles
+- `infoHash` + trackers -> MAGNET fallback
+- direct-stream and torrent-pointer deduplication
 
-Configured manifest URLs stay in CloudStream local preferences and must never be committed to GitHub. TPBBridge also avoids exposing configured manifest URLs as provider `mainUrl` values or embedding them in new result/history payloads. Legacy v4 item payloads are accepted only when their exact manifest is still configured.
+TPBBridge does not call TorBox, Real-Debrid or another debrid API itself. It consumes whatever TPB returns. If TPB resolves a direct debrid URL, TPBBridge passes it through; if TPB returns only a torrent hash, TPBBridge provides the magnet fallback.
 
-The plugin intentionally does **not** invoke CloudStream's internal plugin hot-reload functions; current CloudStream source explicitly warns extensions not to do that because it can recurse, leak, or crash. Live settings application replaces only TPBBridge's registered providers and fires CloudStream's normal provider-refresh event.
+Stremio `fileIdx` is used in torrent-pointer deduplication, but generic CloudStream magnet handling cannot guarantee exact Stremio-style file selection for every multi-file torrent. Resolved direct debrid URLs remain preferred for exact-file playback.
+
+## Failure isolation
+
+- A failing Home catalogue does not have to destroy the other Home rows.
+- A failing individual Search route is isolated from other aggregate Search routes.
+- Saving/refreshing a profile validates and rediscovers that profile before replacing the working configuration. If discovery fails, the existing saved providers remain active.
+- Profile persistence uses synchronous success checks for destructive/important writes.
+- The plugin keeps one known-good profile-state backup for recovery from malformed primary profile JSON.
+
+## Remove one profile vs wipe everything
+
+**Remove this profile** deletes only that profile's manifests, Home/Search providers, order, disabled-source state and filter settings. Other profiles remain configured.
+
+**Delete all TPBBridge data** is the clean-removal action to use before uninstalling. It clears all TPBBridge profiles/preferences/cache and active TPBBridge providers, and removes their stale names from CloudStream's saved Search/Home selection. It deliberately does not delete CloudStream history/bookmarks, player/debrid settings or other extensions.
+
+Uninstalling the extension without using the wipe action may leave TPBBridge preferences in CloudStream app storage, allowing the configuration to return after reinstall.
+
+## Privacy
+
+Configured manifest URLs remain in TPBBridge's local CloudStream preferences. They must never be committed to the repository. Provider `mainUrl` values use non-secret TPBBridge scope identifiers rather than configured manifest URLs, and current result/history payloads use short references instead of embedding private manifest bases.
+
+## Target
+
+Built against `com.lagradost:cloudstream3:pre-release`, Kotlin compatible with the current Red/pre-release build environment, and marked beta-only (`status = 3`).
 
 ## Attribution and license
 
