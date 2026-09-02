@@ -1,11 +1,11 @@
 /*
  * TPBBridge - CloudStream plugin
  *
- * Reads configured Stremio/TPB manifests, keeps normal Recent catalogs together
- * in one Home provider, and exposes each Search catalog as its own CloudStream
- * provider. Optional switches add parent/all-source Search and TPB's required
- * Studio/Performer/Tag filter catalogs without polluting Home rows. Sources can
- * be locally reordered or disabled without touching stream/debrid behavior.
+ * v11 groups one or more Stremio/TPB manifest URLs into independent profiles.
+ * Every profile owns its Home name, Search prefix, source enable/order state,
+ * combined Search toggle and optional Studio/Performer/Tag filters. Playback,
+ * metadata, debrid, P2P, quality and header handling remain in the shared bridge
+ * core and are intentionally not profile-specific.
  *
  * GPL-3.0-or-later. Stremio protocol handling is derived from the GPL bridge
  * approach used by Hexated/phisher98 and compatible forks.
@@ -30,7 +30,9 @@ import com.lagradost.cloudstream3.MainActivity.Companion.afterPluginsLoadedEvent
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.DataStoreHelper
+import java.util.Locale
 
+// Legacy v10 keys are retained only so ProfileConfig.kt can migrate them once.
 internal const val PREF_FILE = "TPBBridge"
 internal const val PREF_MANIFESTS = "manifest_urls"
 internal const val PREF_HOME_NAME = "home_name"
@@ -48,102 +50,122 @@ class TPBBridgePlugin : Plugin() {
 
     override fun load(context: Context) {
         openSettings = { settingsContext -> showSettings(settingsContext) }
-
         val prefs = context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
-        val bases = parseManifestInput(prefs.getString(PREF_MANIFESTS, "").orEmpty())
-        val homeName = prefs.getString(PREF_HOME_NAME, DEFAULT_HOME_NAME)
-            ?.trim().orEmpty().ifBlank { DEFAULT_HOME_NAME }
-        val prefix = prefs.getString(PREF_SEARCH_PREFIX, DEFAULT_SEARCH_PREFIX).orEmpty()
-        val routeGroups = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
-        val facetRoutes = loadFacetRoutes(prefs.getString(PREF_FACET_ROUTES, "").orEmpty())
-        val homeOrder = loadHomeNameList(prefs.getString(PREF_HOME_ORDER, "").orEmpty())
-        val disabledSources = loadHomeNameList(prefs.getString(PREF_DISABLED_SOURCES, "").orEmpty())
-
-        replaceProviders(
-            bases = bases,
-            homeName = homeName,
-            prefix = prefix,
-            routeGroups = routeGroups,
-            facetRoutes = facetRoutes,
-            homeOrder = homeOrder,
-            disabledSources = disabledSources,
-            parentSearch = prefs.getBoolean(PREF_PARENT_SEARCH, false),
-            studioEnabled = prefs.getBoolean(PREF_FACET_STUDIO, false),
-            performerEnabled = prefs.getBoolean(PREF_FACET_PERFORMER, false),
-            tagEnabled = prefs.getBoolean(PREF_FACET_TAG, false),
-            notifyUi = false
-        )
+        replaceProviders(loadProfilesWithMigration(prefs), notifyUi = false)
     }
 
+    /**
+     * Replace only providers created by this plugin instance. Search/Home choices
+     * belonging to other CloudStream extensions are preserved. If a TPBBridge
+     * provider keeps the same visible name across a refresh, its selection stays.
+     */
     @Synchronized
-    private fun replaceProviders(
-        bases: List<String>,
-        homeName: String,
-        prefix: String,
-        routeGroups: List<SearchRouteGroup>,
-        facetRoutes: List<FacetRoute>,
-        homeOrder: List<String>,
-        disabledSources: List<String>,
-        parentSearch: Boolean,
-        studioEnabled: Boolean,
-        performerEnabled: Boolean,
-        tagEnabled: Boolean,
-        notifyUi: Boolean
-    ) {
-        if (registeredProviders.isNotEmpty()) {
-            val old = registeredProviders.toSet()
-            registeredProviders.clear()
+    private fun replaceProviders(profiles: List<BridgeProfile>, notifyUi: Boolean) {
+        val oldProviders = registeredProviders.toList()
+        val oldNames = oldProviders.mapTo(linkedSetOf()) { it.name }
 
+        registeredProviders.clear()
+        if (oldProviders.isNotEmpty()) {
+            val old = oldProviders.toSet()
             old.forEach { APIHolder.removePluginMapping(it) }
             APIHolder.allProviders.withLock {
                 APIHolder.allProviders.removeAll { it in old }
             }
         }
 
-        val disabledKeys = disabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
-        val activeSearchGroups = routeGroups.filter { homeSourceKey(it.sourceName) !in disabledKeys }
-        val activeFacetRoutes = facetRoutes.filter { homeSourceKey(it.sourceName) !in disabledKeys }
+        val usedNames = mutableSetOf<String>()
+        fun nameKey(value: String): String = value.trim().lowercase(Locale.ROOT)
+        fun reserveName(preferred: String, profileLabel: String): String {
+            val base = preferred.trim().ifBlank { "TPB Source" }
+            if (usedNames.add(nameKey(base))) return base
 
-        if (bases.isNotEmpty()) {
+            val scope = profileLabel.trim().ifBlank { "Profile" }
+            var candidate = "$base • $scope"
+            var index = 2
+            while (!usedNames.add(nameKey(candidate))) {
+                candidate = "$base • $scope $index"
+                index++
+            }
+            return candidate
+        }
+
+        profiles.forEach { profile ->
+            val bases = profile.bases
+            if (bases.isEmpty()) return@forEach
+
+            val profileLabel = profile.normalizedHomeName()
+            val scope = safeNameToken(profile.id)
+            val disabledKeys = profile.disabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
+            val activeSearchGroups = profile.routeGroups.filter {
+                homeSourceKey(it.sourceName) !in disabledKeys
+            }
+            val activeFacetRoutes = profile.facetRoutes.filter {
+                homeSourceKey(it.sourceName) !in disabledKeys
+            }
+
+            val homeProviderName = reserveName(profileLabel, profileLabel)
             val home = TPBOrderedHomeProvider(
-                name = homeName,
+                name = homeProviderName,
                 manifestBases = bases,
                 searchGroups = activeSearchGroups,
-                combinedSearchEnabled = parentSearch,
-                homeOrder = homeOrder,
-                disabledSources = disabledSources
-            )
+                combinedSearchEnabled = profile.parentSearch,
+                homeOrder = profile.homeOrder,
+                disabledSources = profile.disabledSources
+            ).apply {
+                mainUrl = "$SAFE_MAIN_URL/home/$scope"
+            }
             registerMainAPI(home)
             registeredProviders += home
 
             activeSearchGroups.forEach { group ->
-                if (group.routes.isNotEmpty()) {
-                    val provider = TPBSearchProvider(
-                        name = prefix + group.sourceName,
-                        sourceName = group.sourceName,
-                        routes = group.routes
-                    )
-                    registerMainAPI(provider)
-                    registeredProviders += provider
+                if (group.routes.isEmpty()) return@forEach
+                val providerName = reserveName(
+                    profile.searchPrefix + group.sourceName,
+                    profileLabel
+                )
+                val provider = TPBSearchProvider(
+                    name = providerName,
+                    sourceName = group.sourceName,
+                    routes = group.routes
+                ).apply {
+                    mainUrl = "$SAFE_MAIN_URL/search/$scope/${safeNameToken(group.sourceName)}"
                 }
+                registerMainAPI(provider)
+                registeredProviders += provider
             }
 
             val enabledFacets = listOf(
-                FacetKind.STUDIO to studioEnabled,
-                FacetKind.PERFORMER to performerEnabled,
-                FacetKind.TAG to tagEnabled
+                FacetKind.STUDIO to profile.studioEnabled,
+                FacetKind.PERFORMER to profile.performerEnabled,
+                FacetKind.TAG to profile.tagEnabled
             )
             enabledFacets.forEach { (kind, enabled) ->
                 if (!enabled) return@forEach
                 val routes = activeFacetRoutes.filter { it.kind == kind }
                 if (routes.isEmpty()) return@forEach
+
                 val provider = TPBFacetProvider(
-                    name = "$homeName • ${kind.label}",
+                    name = reserveName("$homeProviderName • ${kind.label}", profileLabel),
                     kind = kind,
                     routes = routes
-                )
+                ).apply {
+                    mainUrl = "$SAFE_MAIN_URL/filter/$scope/${kind.token}"
+                }
                 registerMainAPI(provider)
                 registeredProviders += provider
+            }
+        }
+
+        // Remove only stale TPBBridge names from CloudStream's saved selection.
+        val newNames = registeredProviders.mapTo(linkedSetOf()) { it.name }
+        if (oldNames.isNotEmpty()) {
+            val selected = DataStoreHelper.searchPreferenceProviders
+            val cleaned = selected.filter { it !in oldNames || it in newNames }.distinct()
+            if (cleaned != selected) DataStoreHelper.searchPreferenceProviders = cleaned
+
+            val currentHome = DataStoreHelper.currentHomePage
+            if (currentHome != null && currentHome in oldNames && currentHome !in newNames) {
+                DataStoreHelper.currentHomePage = null
             }
         }
 
@@ -156,19 +178,191 @@ class TPBBridgePlugin : Plugin() {
             return
         }
         val prefs = activity.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+        var profiles = loadProfilesWithMigration(prefs)
 
         fun dp(v: Int): Int = (v * activity.resources.displayMetrics.density).toInt()
         fun section(text: String): TextView = TextView(activity).apply {
             this.text = text
             textSize = 17f
             setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, dp(16), 0, dp(5))
+            setPadding(0, dp(14), 0, dp(5))
+        }
+        fun helper(text: String): TextView = TextView(activity).apply {
+            this.text = text
+            textSize = 13f
+            alpha = 0.72f
+            setPadding(0, 0, 0, dp(4))
+        }
+
+        val root = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(18))
+        }
+        val summary = TextView(activity).apply {
+            textSize = 13.5f
+            alpha = 0.78f
+            setPadding(0, 0, 0, dp(4))
+        }
+        root.addView(summary)
+        root.addView(section("Profiles"))
+        root.addView(helper("Each profile has its own manifests, Home, Search and source settings."))
+
+        val profileContainer = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        root.addView(profileContainer)
+
+        fun updateSummary() {
+            if (profiles.isEmpty()) {
+                summary.text = "No profiles configured"
+            } else {
+                val manifestCount = profiles.sumOf { it.bases.size }
+                summary.text = buildString {
+                    append(profiles.size)
+                    append(if (profiles.size == 1) " profile" else " profiles")
+                    append(" • ")
+                    append(manifestCount)
+                    append(if (manifestCount == 1) " manifest" else " manifests")
+                }
+            }
+        }
+
+        fun nextDefaultHomeName(): String {
+            if (profiles.isEmpty() && profileHomeNamesAreUnique(profiles, "", DEFAULT_HOME_NAME)) {
+                return DEFAULT_HOME_NAME
+            }
+            var index = profiles.size + 1
+            while (true) {
+                val candidate = "TPB Profile $index"
+                if (profileHomeNamesAreUnique(profiles, "", candidate)) return candidate
+                index++
+            }
+        }
+
+        fun renderProfiles() {
+            profileContainer.removeAllViews()
+            profiles.forEach { profile ->
+                profileContainer.addView(Button(activity).apply {
+                    text = "${profile.normalizedHomeName()}\n${profileSummary(profile)}"
+                    textSize = 15f
+                    setOnClickListener {
+                        showProfileEditor(
+                            activity = activity,
+                            prefs = prefs,
+                            currentProfiles = profiles,
+                            initialProfile = profile,
+                            isNew = false
+                        ) { updated ->
+                            profiles = updated
+                            updateSummary()
+                            renderProfiles()
+                        }
+                    }
+                })
+            }
+            if (profiles.isEmpty()) {
+                profileContainer.addView(helper("Add a profile to begin."))
+            }
+        }
+
+        val addProfile = Button(activity).apply { text = "+ Add profile" }
+        root.addView(addProfile)
+        root.addView(helper("A profile can contain one or several split manifest URLs."))
+
+        root.addView(section("Remove"))
+        val wipe = Button(activity).apply { text = "Delete all TPBBridge data" }
+        root.addView(wipe)
+        root.addView(helper("Use before uninstalling • removes every TPBBridge profile and active provider"))
+
+        val scroll = ScrollView(activity).apply { addView(root) }
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle("TPBBridge")
+            .setView(scroll)
+            .setNegativeButton("Close", null)
+            .create()
+
+        addProfile.setOnClickListener {
+            val draft = BridgeProfile(
+                id = newProfileId(),
+                manifestInput = "",
+                homeName = nextDefaultHomeName(),
+                searchPrefix = DEFAULT_SEARCH_PREFIX
+            )
+            showProfileEditor(
+                activity = activity,
+                prefs = prefs,
+                currentProfiles = profiles,
+                initialProfile = draft,
+                isNew = true
+            ) { updated ->
+                profiles = updated
+                updateSummary()
+                renderProfiles()
+            }
+        }
+
+        wipe.setOnClickListener {
+            AlertDialog.Builder(activity)
+                .setTitle("Delete all TPBBridge data?")
+                .setMessage(
+                    "This permanently erases every TPBBridge profile, manifest URL, source order, " +
+                        "disabled-source state, search/filter setting and active TPBBridge provider.\n\n" +
+                        "It does not delete CloudStream history/bookmarks, player settings, debrid settings, " +
+                        "or other extensions.\n\nAfter this succeeds, you can uninstall TPBBridge."
+                )
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete all data") { _, _ ->
+                    val knownNames = allKnownProviderNames(profiles)
+                    val erased = prefs.edit().clear().commit()
+                    if (!erased) {
+                        Toast.makeText(activity, "TPBBridge data was not erased.", Toast.LENGTH_LONG).show()
+                    } else {
+                        DataStoreHelper.searchPreferenceProviders =
+                            DataStoreHelper.searchPreferenceProviders.filterNot { it in knownNames }
+                        val currentHome = DataStoreHelper.currentHomePage
+                        if (currentHome != null && currentHome in knownNames) {
+                            DataStoreHelper.currentHomePage = null
+                        }
+
+                        invalidateManifestCache()
+                        replaceProviders(emptyList(), notifyUi = true)
+                        profiles = emptyList()
+                        Toast.makeText(
+                            activity,
+                            "TPBBridge data deleted. You can uninstall the extension now.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        dialog.dismiss()
+                    }
+                }
+                .show()
+        }
+
+        updateSummary()
+        renderProfiles()
+        dialog.show()
+    }
+
+    private fun showProfileEditor(
+        activity: android.app.Activity,
+        prefs: android.content.SharedPreferences,
+        currentProfiles: List<BridgeProfile>,
+        initialProfile: BridgeProfile,
+        isNew: Boolean,
+        onProfilesChanged: (List<BridgeProfile>) -> Unit
+    ) {
+        fun dp(v: Int): Int = (v * activity.resources.displayMetrics.density).toInt()
+        fun section(text: String): TextView = TextView(activity).apply {
+            this.text = text
+            textSize = 17f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(0, dp(14), 0, dp(5))
         }
         fun label(text: String): TextView = TextView(activity).apply {
             this.text = text
             textSize = 15f
             setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, dp(8), 0, dp(2))
+            setPadding(0, dp(7), 0, dp(2))
         }
         fun helper(text: String): TextView = TextView(activity).apply {
             this.text = text
@@ -188,53 +382,26 @@ class TPBBridgePlugin : Plugin() {
             isChecked = checked
             setPadding(0, dp(2), 0, dp(2))
         }
-        fun compactSummary(manifestCount: Int, sourceCount: Int, disabledCount: Int): String {
-            if (manifestCount == 0) return "Not configured"
-            val manifests = if (manifestCount == 1) "manifest" else "manifests"
-            val sources = if (sourceCount == 1) "source" else "sources"
-            return buildString {
-                append("$manifestCount $manifests • $sourceCount $sources")
-                if (disabledCount > 0) append(" • $disabledCount off")
-            }
-        }
+
+        var availableSources = initialProfile.managedSources
+        var workingHomeOrder = reconcileHomeOrder(initialProfile.homeOrder, availableSources)
+        var workingDisabledSources = initialProfile.disabledSources
 
         val root = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(6), dp(18), dp(18))
         }
 
-        val currentRoutes = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
-        val currentBases = parseManifestInput(prefs.getString(PREF_MANIFESTS, "").orEmpty())
-        var availableSources = loadHomeNameList(prefs.getString(PREF_HOME_SOURCES, "").orEmpty())
-        var workingHomeOrder = reconcileHomeOrder(
-            loadHomeNameList(prefs.getString(PREF_HOME_ORDER, "").orEmpty()),
-            availableSources
-        )
-        var workingDisabledSources = loadHomeNameList(
-            prefs.getString(PREF_DISABLED_SOURCES, "").orEmpty()
-        )
-        var hasSavedConfiguration = currentBases.isNotEmpty()
-
-        fun visibleDisabledCount(): Int = availableSources.count {
-            isSourceDisabled(it, workingDisabledSources)
-        }
-
-        val summary = TextView(activity).apply {
-            textSize = 13.5f
-            alpha = 0.78f
-            setPadding(0, 0, 0, dp(2))
-            text = compactSummary(currentBases.size, currentRoutes.size, visibleDisabledCount())
-        }
-        root.addView(summary)
-
         root.addView(section("Setup"))
         root.addView(label("Manifest URL(s)"))
-        root.addView(helper("One URL per line"))
+        root.addView(helper("One URL per line • URLs in this profile are combined together"))
         val manifestsEdit = EditText(activity).apply {
             minLines = 3
-            maxLines = 6
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            setText(prefs.getString(PREF_MANIFESTS, "").orEmpty())
+            maxLines = 7
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_VARIATION_URI or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setText(initialProfile.manifestInput)
             hint = "https://…/manifest.json"
         }
         root.addView(
@@ -244,10 +411,10 @@ class TPBBridgePlugin : Plugin() {
         root.addView(warning("Manifest URLs can contain private API keys. Keep them private."))
 
         root.addView(label("Home name"))
-        root.addView(helper("Name for the combined Home provider"))
+        root.addView(helper("Only this profile uses this Home provider name"))
         val homeNameEdit = EditText(activity).apply {
             setSingleLine(true)
-            setText(prefs.getString(PREF_HOME_NAME, DEFAULT_HOME_NAME) ?: DEFAULT_HOME_NAME)
+            setText(initialProfile.normalizedHomeName())
             hint = DEFAULT_HOME_NAME
         }
         root.addView(homeNameEdit)
@@ -258,43 +425,39 @@ class TPBBridgePlugin : Plugin() {
         }
         root.addView(manageSources)
         val manageHint = helper(
-            if (availableSources.isEmpty()) "Save + refresh once to discover sources"
-            else "Enable, disable, and arrange Home rows"
+            if (availableSources.isEmpty()) "Save + refresh once to discover this profile's sources"
+            else "Enable, disable, and arrange only this profile's sources"
         )
         root.addView(manageHint)
 
         root.addView(label("Search prefix (optional)"))
-        root.addView(helper("Leave blank for clean source names"))
+        root.addView(helper("Applied only to this profile's individual Search providers"))
         val prefixEdit = EditText(activity).apply {
             setSingleLine(true)
-            setText(prefs.getString(PREF_SEARCH_PREFIX, DEFAULT_SEARCH_PREFIX) ?: DEFAULT_SEARCH_PREFIX)
+            setText(initialProfile.searchPrefix)
             hint = "TPB • "
         }
         root.addView(prefixEdit)
 
         root.addView(section("Search"))
-        val parentSearchSwitch = toggle(
-            "Search through Home name",
-            prefs.getBoolean(PREF_PARENT_SEARCH, false)
-        )
+        val parentSearchSwitch = toggle("Search through Home name", initialProfile.parentSearch)
         root.addView(parentSearchSwitch)
-        root.addView(helper("Combine results from all enabled sources"))
-        root.addView(warning("Selecting Home + individual sources together can show duplicate results."))
+        root.addView(helper("Combine results from all enabled sources in this profile"))
+        root.addView(warning("Selecting the Home provider + its individual sources together can show duplicates."))
 
         root.addView(section("Extra filters"))
         root.addView(helper("Search only • never shown as Home rows"))
-        val studioSwitch = toggle("Studio", prefs.getBoolean(PREF_FACET_STUDIO, false))
-        val performerSwitch = toggle("Performer", prefs.getBoolean(PREF_FACET_PERFORMER, false))
-        val tagSwitch = toggle("Tag", prefs.getBoolean(PREF_FACET_TAG, false))
+        val studioSwitch = toggle("Studio", initialProfile.studioEnabled)
+        val performerSwitch = toggle("Performer", initialProfile.performerEnabled)
+        val tagSwitch = toggle("Tag", initialProfile.tagEnabled)
         root.addView(studioSwitch)
         root.addView(performerSwitch)
         root.addView(tagSwitch)
-        root.addView(helper("Requires matching filters enabled in TPB."))
+        root.addView(helper("Requires matching filters enabled in the manifests for this profile."))
 
         val status = TextView(activity).apply {
             textSize = 13.5f
             setPadding(0, dp(10), 0, dp(6))
-            text = ""
         }
         root.addView(status)
 
@@ -307,266 +470,148 @@ class TPBBridgePlugin : Plugin() {
             ) { result ->
                 workingHomeOrder = result.fullOrder
                 workingDisabledSources = result.disabledSources
-                summary.text = compactSummary(currentBases.size, currentRoutes.size, visibleDisabledCount())
                 status.text = "Source settings changed • Save + refresh to apply"
             }
         }
 
-        val apply = Button(activity).apply { text = "Save + refresh" }
-        root.addView(apply)
-        root.addView(helper("No app restart needed"))
+        val save = Button(activity).apply { text = "Save + refresh" }
+        root.addView(save)
+        root.addView(helper("Refreshes this profile; other profiles keep their saved configuration"))
 
-        root.addView(section("Remove"))
-        val wipe = Button(activity).apply { text = "Delete all TPBBridge data" }
-        root.addView(wipe)
-        root.addView(helper("Use before uninstalling • removes TPBBridge setup and active providers only"))
+        val remove = if (!isNew) {
+            root.addView(section("Remove profile"))
+            Button(activity).apply { text = "Remove this profile" }.also { root.addView(it) }
+        } else null
 
         val scroll = ScrollView(activity).apply { addView(root) }
         val dialog = AlertDialog.Builder(activity)
-            .setTitle("TPBBridge")
+            .setTitle(if (isNew) "Add TPBBridge profile" else initialProfile.normalizedHomeName())
             .setView(scroll)
             .setNegativeButton("Close", null)
             .create()
 
-        wipe.setOnClickListener {
-            AlertDialog.Builder(activity)
-                .setTitle("Delete all TPBBridge data?")
-                .setMessage(
-                    "This permanently erases TPBBridge manifest URLs, source order, disabled-source state, " +
-                        "search/filter settings and active TPBBridge providers.\n\n" +
-                        "It does not delete CloudStream history/bookmarks, player settings, debrid settings, " +
-                        "or other extensions.\n\nAfter this succeeds, you can uninstall TPBBridge."
-                )
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Delete all data") { _, _ ->
-                    val savedHomeName = prefs.getString(PREF_HOME_NAME, DEFAULT_HOME_NAME)
-                        ?.trim().orEmpty().ifBlank { DEFAULT_HOME_NAME }
-                    val savedPrefix = prefs.getString(PREF_SEARCH_PREFIX, DEFAULT_SEARCH_PREFIX).orEmpty()
-                    val savedRoutes = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
-
-                    val knownProviderNames = linkedSetOf<String>().apply {
-                        addAll(registeredProviders.map { it.name })
-                        add(savedHomeName)
-                        savedRoutes.forEach { add(savedPrefix + it.sourceName) }
-                        add("$savedHomeName • ${FacetKind.STUDIO.label}")
-                        add("$savedHomeName • ${FacetKind.PERFORMER.label}")
-                        add("$savedHomeName • ${FacetKind.TAG.label}")
-                    }
-
-                    val erased = prefs.edit().clear().commit()
-                    if (!erased) {
-                        status.text = "⚠ Could not erase TPBBridge data. Nothing was unregistered."
-                        Toast.makeText(activity, "TPBBridge data was not erased.", Toast.LENGTH_LONG).show()
-                    } else {
-                        DataStoreHelper.searchPreferenceProviders =
-                            DataStoreHelper.searchPreferenceProviders.filterNot { it in knownProviderNames }
-                        if (DataStoreHelper.currentHomePage in knownProviderNames) {
-                            DataStoreHelper.currentHomePage = null
-                        }
-
-                        invalidateManifestCache()
-                        replaceProviders(
-                            bases = emptyList(),
-                            homeName = DEFAULT_HOME_NAME,
-                            prefix = DEFAULT_SEARCH_PREFIX,
-                            routeGroups = emptyList(),
-                            facetRoutes = emptyList(),
-                            homeOrder = emptyList(),
-                            disabledSources = emptyList(),
-                            parentSearch = false,
-                            studioEnabled = false,
-                            performerEnabled = false,
-                            tagEnabled = false,
-                            notifyUi = true
-                        )
-                        Toast.makeText(
-                            activity,
-                            "TPBBridge data deleted. You can uninstall the extension now.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                        dialog.dismiss()
-                    }
-                }
-                .show()
-        }
-
-        apply.setOnClickListener {
+        save.setOnClickListener {
             val raw = manifestsEdit.text.toString().trim()
             val bases = parseManifestInput(raw)
             val homeName = homeNameEdit.text.toString().trim().ifBlank { DEFAULT_HOME_NAME }
             val prefix = prefixEdit.text.toString()
-            val parentSearch = parentSearchSwitch.isChecked
-            val studioEnabled = studioSwitch.isChecked
-            val performerEnabled = performerSwitch.isChecked
-            val tagEnabled = tagSwitch.isChecked
 
-            if (raw.isNotBlank() && bases.isEmpty()) {
-                status.text = "⚠ No valid manifest URL found."
+            if (raw.isBlank() || bases.isEmpty()) {
+                status.text = "⚠ Add at least one valid manifest URL."
+                return@setOnClickListener
+            }
+            if (!profileHomeNamesAreUnique(currentProfiles, initialProfile.id, homeName)) {
+                status.text = "⚠ Home name '$homeName' is already used by another TPBBridge profile."
                 return@setOnClickListener
             }
 
-            if (bases.isEmpty()) {
-                fun clearNow() {
-                    prefs.edit()
-                        .putString(PREF_MANIFESTS, "")
-                        .putString(PREF_HOME_NAME, homeName)
-                        .putString(PREF_SEARCH_PREFIX, prefix)
-                        .putBoolean(PREF_PARENT_SEARCH, parentSearch)
-                        .putBoolean(PREF_FACET_STUDIO, studioEnabled)
-                        .putBoolean(PREF_FACET_PERFORMER, performerEnabled)
-                        .putBoolean(PREF_FACET_TAG, tagEnabled)
-                        .remove(PREF_ROUTES)
-                        .remove(PREF_FACET_ROUTES)
-                        .remove(PREF_HOME_SOURCES)
-                        .remove(PREF_HOME_ORDER)
-                        .remove(PREF_DISABLED_SOURCES)
-                        .apply()
-                    invalidateManifestCache()
-                    replaceProviders(
-                        emptyList(), homeName, prefix, emptyList(), emptyList(), emptyList(), emptyList(),
-                        parentSearch, studioEnabled, performerEnabled, tagEnabled,
-                        notifyUi = true
-                    )
-                    availableSources = emptyList()
-                    workingHomeOrder = emptyList()
-                    workingDisabledSources = emptyList()
-                    manageSources.isEnabled = false
-                    manageHint.text = "Save + refresh once to discover sources"
-                    hasSavedConfiguration = false
-                    summary.text = "Not configured"
-                    status.text = "Cleared."
-                    Toast.makeText(activity, "TPBBridge cleared.", Toast.LENGTH_SHORT).show()
-                }
-
-                if (hasSavedConfiguration) {
-                    AlertDialog.Builder(activity)
-                        .setTitle("Clear TPBBridge?")
-                        .setMessage("This removes the saved manifests and TPBBridge providers.")
-                        .setNegativeButton("Cancel", null)
-                        .setPositiveButton("Clear") { _, _ -> clearNow() }
-                        .show()
-                } else {
-                    clearNow()
-                }
-                return@setOnClickListener
-            }
-
-            apply.isEnabled = false
-            status.text = "Refreshing…"
+            save.isEnabled = false
+            remove?.isEnabled = false
+            status.text = "Refreshing this profile…"
 
             Thread {
                 try {
+                    // Discovery is intentionally profile-local: other profiles are not fetched again.
                     val discovered = discoverBridgeRoutes(bases)
-                    val discoveredHomeSources = try {
+                    val homeSources = try {
                         discoverHomeSources(bases)
                     } catch (_: Throwable) {
                         emptyList()
                     }
-                    val discoveredSources = managedSourceList(
-                        discoveredHomeSources,
+                    val sources = managedSourceList(
+                        homeSources,
                         discovered.searchGroups,
                         discovered.facetRoutes
                     )
-                    val nextHomeOrder = reconcileHomeOrder(workingHomeOrder, discoveredSources)
-                    val nextDisabledSources = workingDisabledSources
+                    val nextOrder = reconcileHomeOrder(workingHomeOrder, sources)
+                    val nextDisabled = workingDisabledSources
                         .map { it.trim() }
                         .filter { it.isNotBlank() }
                         .distinctBy(::homeSourceKey)
 
-                    prefs.edit()
-                        .putString(PREF_MANIFESTS, raw)
-                        .putString(PREF_HOME_NAME, homeName)
-                        .putString(PREF_SEARCH_PREFIX, prefix)
-                        .putString(PREF_ROUTES, saveRouteGroups(discovered.searchGroups))
-                        .putString(PREF_FACET_ROUTES, saveFacetRoutes(discovered.facetRoutes))
-                        .putString(PREF_HOME_SOURCES, saveHomeNameList(discoveredSources))
-                        .putString(PREF_HOME_ORDER, saveHomeNameList(nextHomeOrder))
-                        .putString(PREF_DISABLED_SOURCES, saveHomeNameList(nextDisabledSources))
-                        .putBoolean(PREF_PARENT_SEARCH, parentSearch)
-                        .putBoolean(PREF_FACET_STUDIO, studioEnabled)
-                        .putBoolean(PREF_FACET_PERFORMER, performerEnabled)
-                        .putBoolean(PREF_FACET_TAG, tagEnabled)
-                        .apply()
+                    val updatedProfile = initialProfile.copy(
+                        manifestInput = raw,
+                        homeName = homeName,
+                        searchPrefix = prefix,
+                        routeGroups = discovered.searchGroups,
+                        facetRoutes = discovered.facetRoutes,
+                        managedSources = sources,
+                        homeOrder = nextOrder,
+                        disabledSources = nextDisabled,
+                        parentSearch = parentSearchSwitch.isChecked,
+                        studioEnabled = studioSwitch.isChecked,
+                        performerEnabled = performerSwitch.isChecked,
+                        tagEnabled = tagSwitch.isChecked
+                    )
+                    val nextProfiles = if (isNew) {
+                        currentProfiles + updatedProfile
+                    } else {
+                        currentProfiles.map {
+                            if (it.id == initialProfile.id) updatedProfile else it
+                        }
+                    }
+
+                    if (!persistProfiles(prefs, nextProfiles)) {
+                        throw IllegalStateException("Android could not save the profile")
+                    }
 
                     invalidateManifestCache()
                     activity.runOnUiThread {
-                        replaceProviders(
-                            bases = bases,
-                            homeName = homeName,
-                            prefix = prefix,
-                            routeGroups = discovered.searchGroups,
-                            facetRoutes = discovered.facetRoutes,
-                            homeOrder = nextHomeOrder,
-                            disabledSources = nextDisabledSources,
-                            parentSearch = parentSearch,
-                            studioEnabled = studioEnabled,
-                            performerEnabled = performerEnabled,
-                            tagEnabled = tagEnabled,
-                            notifyUi = true
-                        )
-                        apply.isEnabled = true
-                        availableSources = discoveredSources
-                        workingHomeOrder = nextHomeOrder
-                        workingDisabledSources = nextDisabledSources
-                        manageSources.isEnabled = availableSources.isNotEmpty()
-                        manageHint.text = if (availableSources.isEmpty()) {
-                            "Save + refresh once to discover sources"
-                        } else {
-                            "Enable, disable, and arrange Home rows"
-                        }
-                        hasSavedConfiguration = true
-
-                        val disabledKeys = nextDisabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
-                        val enabledSearchCount = discovered.searchGroups.count {
-                            homeSourceKey(it.sourceName) !in disabledKeys
-                        }
-                        val enabledDisabledCount = discoveredSources.count {
-                            homeSourceKey(it) in disabledKeys
-                        }
-                        summary.text = compactSummary(bases.size, enabledSearchCount, enabledDisabledCount)
-
-                        fun countEnabled(kind: FacetKind): Int = discovered.facetRoutes
-                            .filter { it.kind == kind && homeSourceKey(it.sourceName) !in disabledKeys }
-                            .map { it.sourceName.lowercase() }
-                            .distinct()
-                            .size
-
-                        val warnings = mutableListOf<String>()
-                        if (discoveredSources.isEmpty()) {
-                            warnings += "No sources found; enable Recent or Search in TPB."
-                        }
-                        if (discovered.searchGroups.isEmpty()) {
-                            warnings += "No Search catalogs found; enable Search in TPB."
-                        }
-                        if (studioEnabled && countEnabled(FacetKind.STUDIO) == 0) {
-                            warnings += "Studio is ON but unavailable for enabled sources."
-                        }
-                        if (performerEnabled && countEnabled(FacetKind.PERFORMER) == 0) {
-                            warnings += "Performer is ON but unavailable for enabled sources."
-                        }
-                        if (tagEnabled && countEnabled(FacetKind.TAG) == 0) {
-                            warnings += "Tag is ON but unavailable for enabled sources."
-                        }
-
-                        status.text = buildString {
-                            append("Saved • $enabledSearchCount active sources")
-                            if (enabledDisabledCount > 0) append(" • $enabledDisabledCount off")
-                            if (warnings.isNotEmpty()) {
-                                append("\n⚠ ")
-                                append(warnings.joinToString(" "))
-                            }
-                        }
-                        Toast.makeText(activity, "TPBBridge refreshed.", Toast.LENGTH_SHORT).show()
+                        replaceProviders(nextProfiles, notifyUi = true)
+                        onProfilesChanged(nextProfiles)
+                        Toast.makeText(activity, "$homeName refreshed.", Toast.LENGTH_SHORT).show()
+                        dialog.dismiss()
                     }
                 } catch (t: Throwable) {
                     activity.runOnUiThread {
-                        apply.isEnabled = true
+                        save.isEnabled = true
+                        remove?.isEnabled = true
                         status.text = "⚠ Could not refresh: ${t.message ?: t.javaClass.simpleName}. Existing providers were kept."
                     }
                 }
             }.start()
         }
 
+        remove?.setOnClickListener {
+            AlertDialog.Builder(activity)
+                .setTitle("Remove ${initialProfile.normalizedHomeName()}?")
+                .setMessage(
+                    "This removes only this profile's manifest URLs, Home/Search providers, source order and filter settings. " +
+                        "Other TPBBridge profiles are not changed."
+                )
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Remove profile") { _, _ ->
+                    val nextProfiles = currentProfiles.filterNot { it.id == initialProfile.id }
+                    if (!persistProfiles(prefs, nextProfiles)) {
+                        Toast.makeText(activity, "Profile was not removed.", Toast.LENGTH_LONG).show()
+                    } else {
+                        invalidateManifestCache()
+                        replaceProviders(nextProfiles, notifyUi = true)
+                        onProfilesChanged(nextProfiles)
+                        Toast.makeText(activity, "Profile removed.", Toast.LENGTH_SHORT).show()
+                        dialog.dismiss()
+                    }
+                }
+                .show()
+        }
+
         dialog.show()
+    }
+
+    /** Names that may still exist in CloudStream selection state when wiping. */
+    private fun allKnownProviderNames(profiles: List<BridgeProfile>): Set<String> = linkedSetOf<String>().apply {
+        addAll(registeredProviders.map { it.name })
+        profiles.forEach { profile ->
+            val home = profile.normalizedHomeName()
+            add(home)
+            profile.routeGroups.forEach { group ->
+                val raw = (profile.searchPrefix + group.sourceName).trim()
+                if (raw.isNotBlank()) {
+                    add(raw)
+                    add("$raw • $home")
+                }
+            }
+            FacetKind.entries.forEach { kind -> add("$home • ${kind.label}") }
+        }
     }
 }
