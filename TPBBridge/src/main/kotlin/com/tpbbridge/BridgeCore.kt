@@ -285,11 +285,8 @@ internal data class Catalog(
 
     fun hasRequiredExtra(): Boolean = extra?.any { it.isRequired == true } == true
 
-    fun isHomeCatalog(): Boolean {
-        if (hasRequiredExtra()) return false
-        val label = "${name.orEmpty()} $id".lowercase(Locale.ROOT)
-        return label.contains("recent")
-    }
+    fun isHomeCatalog(): Boolean =
+        isTpbHomeCatalogDescriptor(name, id, hasRequiredExtra())
 
     suspend fun toHomeRow(base: String, provider: TPBBaseProvider, page: Int): HomeRow {
         val skip = ((page - 1).coerceAtLeast(0) * SEARCH_PAGE_SIZE)
@@ -438,13 +435,18 @@ internal data class Stream(
                 behaviorHints?.headers?.let { putAll(it) }
                 behaviorHints?.proxyHeaders?.request?.let { putAll(it) }
             }
+            val directType = if (isLikelyTpbHls(url, name, title, description)) {
+                ExtractorLinkType.M3U8
+            } else {
+                INFER_TYPE
+            }
 
             callback(
                 newExtractorLink(
                     source = cleanStreamSource(name),
                     name = cleanName,
                     url = url,
-                    type = INFER_TYPE
+                    type = directType
                 ) {
                     this.quality = quality
                     headers = requestHeaders
