@@ -423,6 +423,13 @@ class TPBBridgePlugin : Plugin() {
             val bases = parseManifestInput(raw)
             val homeName = homeEdit.text.toString().trim().ifBlank { DEFAULT_HOME_NAME }
             val prefix = prefixEdit.text.toString()
+            // Snapshot all UI-owned state before leaving the main thread.
+            val parentSearchEnabled = parentSearch.isChecked
+            val studioEnabled = studio.isChecked
+            val performerEnabled = performer.isChecked
+            val tagEnabled = tag.isChecked
+            val orderSnapshot = workingOrder.toList()
+            val disabledSnapshot = workingDisabled.toList()
 
             if (raw.isBlank() || bases.isEmpty()) {
                 status.text = "⚠ Add at least one valid manifest URL."
@@ -445,8 +452,8 @@ class TPBBridgePlugin : Plugin() {
                         discovered.searchGroups,
                         discovered.facetRoutes
                     )
-                    val nextOrder = reconcileHomeOrder(workingOrder, discoveredSources)
-                    val nextDisabled = workingDisabled
+                    val nextOrder = reconcileHomeOrder(orderSnapshot, discoveredSources)
+                    val nextDisabled = disabledSnapshot
                         .map { it.trim() }
                         .filter { it.isNotBlank() }
                         .distinctBy(::homeSourceKey)
@@ -461,10 +468,10 @@ class TPBBridgePlugin : Plugin() {
                         homeSources = discoveredSources,
                         homeOrder = nextOrder,
                         disabledSources = nextDisabled,
-                        parentSearch = parentSearch.isChecked,
-                        studioEnabled = studio.isChecked,
-                        performerEnabled = performer.isChecked,
-                        tagEnabled = tag.isChecked
+                        parentSearch = parentSearchEnabled,
+                        studioEnabled = studioEnabled,
+                        performerEnabled = performerEnabled,
+                        tagEnabled = tagEnabled
                     )
 
                     val updated = if (current == null) {
