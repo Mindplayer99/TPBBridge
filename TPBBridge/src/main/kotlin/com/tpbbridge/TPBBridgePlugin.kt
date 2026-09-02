@@ -29,6 +29,7 @@ import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainActivity.Companion.afterPluginsLoadedEvent
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import com.lagradost.cloudstream3.utils.DataStoreHelper
 
 internal const val PREF_FILE = "TPBBridge"
 internal const val PREF_MANIFESTS = "manifest_urls"
@@ -315,12 +316,79 @@ class TPBBridgePlugin : Plugin() {
         root.addView(apply)
         root.addView(helper("No app restart needed"))
 
+        root.addView(section("Remove"))
+        val wipe = Button(activity).apply { text = "Delete all TPBBridge data" }
+        root.addView(wipe)
+        root.addView(helper("Use before uninstalling • removes TPBBridge setup and active providers only"))
+
         val scroll = ScrollView(activity).apply { addView(root) }
         val dialog = AlertDialog.Builder(activity)
             .setTitle("TPBBridge")
             .setView(scroll)
             .setNegativeButton("Close", null)
             .create()
+
+        wipe.setOnClickListener {
+            AlertDialog.Builder(activity)
+                .setTitle("Delete all TPBBridge data?")
+                .setMessage(
+                    "This permanently erases TPBBridge manifest URLs, source order, disabled-source state, " +
+                        "search/filter settings and active TPBBridge providers.\n\n" +
+                        "It does not delete CloudStream history/bookmarks, player settings, debrid settings, " +
+                        "or other extensions.\n\nAfter this succeeds, you can uninstall TPBBridge."
+                )
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete all data") { _, _ ->
+                    val savedHomeName = prefs.getString(PREF_HOME_NAME, DEFAULT_HOME_NAME)
+                        ?.trim().orEmpty().ifBlank { DEFAULT_HOME_NAME }
+                    val savedPrefix = prefs.getString(PREF_SEARCH_PREFIX, DEFAULT_SEARCH_PREFIX).orEmpty()
+                    val savedRoutes = loadRouteGroups(prefs.getString(PREF_ROUTES, "").orEmpty())
+
+                    val knownProviderNames = linkedSetOf<String>().apply {
+                        addAll(registeredProviders.map { it.name })
+                        add(savedHomeName)
+                        savedRoutes.forEach { add(savedPrefix + it.sourceName) }
+                        add("$savedHomeName • ${FacetKind.STUDIO.label}")
+                        add("$savedHomeName • ${FacetKind.PERFORMER.label}")
+                        add("$savedHomeName • ${FacetKind.TAG.label}")
+                    }
+
+                    val erased = prefs.edit().clear().commit()
+                    if (!erased) {
+                        status.text = "⚠ Could not erase TPBBridge data. Nothing was unregistered."
+                        Toast.makeText(activity, "TPBBridge data was not erased.", Toast.LENGTH_LONG).show()
+                    } else {
+                        DataStoreHelper.searchPreferenceProviders =
+                            DataStoreHelper.searchPreferenceProviders.filterNot { it in knownProviderNames }
+                        if (DataStoreHelper.currentHomePage in knownProviderNames) {
+                            DataStoreHelper.currentHomePage = null
+                        }
+
+                        invalidateManifestCache()
+                        replaceProviders(
+                            bases = emptyList(),
+                            homeName = DEFAULT_HOME_NAME,
+                            prefix = DEFAULT_SEARCH_PREFIX,
+                            routeGroups = emptyList(),
+                            facetRoutes = emptyList(),
+                            homeOrder = emptyList(),
+                            disabledSources = emptyList(),
+                            parentSearch = false,
+                            studioEnabled = false,
+                            performerEnabled = false,
+                            tagEnabled = false,
+                            notifyUi = true
+                        )
+                        Toast.makeText(
+                            activity,
+                            "TPBBridge data deleted. You can uninstall the extension now.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        dialog.dismiss()
+                    }
+                }
+                .show()
+        }
 
         apply.setOnClickListener {
             val raw = manifestsEdit.text.toString().trim()
