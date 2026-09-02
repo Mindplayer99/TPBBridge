@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Credential-free smoke test for the public TPB Stremio protocol.
 
-It validates only protocol shape used by TPBBridge: manifest -> recent catalog ->
-meta -> stream. It never prints media titles, stream URLs, or credentials.
+Validates the core tube protocol plus manifest shapes TPBBridge depends on for
+live cams and compact P2P catalogs. It never prints media titles, stream URLs,
+or credentials.
 """
 from __future__ import annotations
 
@@ -50,6 +51,67 @@ def enc_path(value: str) -> str:
     return urllib.parse.quote(value, safe="")
 
 
+def addon_base(config: dict) -> str:
+    raw = json.dumps(config, separators=(",", ":")).encode("utf-8")
+    token = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"{HOST}/{token}"
+
+
+def verify_live_manifest() -> tuple[str, int]:
+    # Stripchat is public and needs no account/debrid key. We test manifest
+    # shape only: live model availability changes constantly and must not make
+    # a release depend on a model being online at the instant CI runs.
+    base = addon_base(
+        {
+            "sources": ["stripchat"],
+            "maxResults": 2,
+            "minSeeders": 0,
+            "enabledSorts": [],
+        }
+    )
+    manifest = get_json(f"{base}/manifest.json")
+    catalogs = manifest.get("catalogs") or []
+    live = [
+        c
+        for c in catalogs
+        if isinstance(c, dict)
+        and (
+            str(c.get("id", "")).lower().startswith("sc_")
+            or "stripchat" in str(c.get("name", "")).lower()
+        )
+    ]
+    if not live:
+        raise RuntimeError("Stripchat manifest exposed no live catalogs")
+    return str(manifest.get("version", "?")), len(live)
+
+
+def verify_compact_p2p_manifest() -> tuple[str, int]:
+    # Credential-free manifest generation is enough to verify that TPB still
+    # accepts compact studio configuration. Do not fetch torrent results here:
+    # indexer availability is independent of manifest compatibility.
+    base = addon_base(
+        {
+            "sources": ["piratebay"],
+            "maxResults": 2,
+            "minSeeders": 0,
+            "enabledSorts": ["recent"],
+            "enabledCatalogs": ["xxx_studio_vixen"],
+            "compactStudios": True,
+        }
+    )
+    manifest = get_json(f"{base}/manifest.json")
+    catalogs = manifest.get("catalogs") or []
+    vixen = [
+        c
+        for c in catalogs
+        if isinstance(c, dict)
+        and "vixen" in f"{c.get('id', '')} {c.get('name', '')}".lower()
+    ]
+    if not vixen:
+        raise RuntimeError("compact P2P studio manifest exposed no configured studio catalog")
+    return str(manifest.get("version", "?")), len(vixen)
+
+
 def main() -> int:
     # No API/debrid keys. yesporn is a direct-play tube source supported by the
     # public TPB backend. A tiny result limit keeps CI traffic minimal.
@@ -59,9 +121,7 @@ def main() -> int:
         "minSeeders": 0,
         "enabledSorts": [],
     }
-    raw = json.dumps(config, separators=(",", ":")).encode("utf-8")
-    token = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-    base = f"{HOST}/{token}"
+    base = addon_base(config)
 
     manifest = get_json(f"{base}/manifest.json")
     resources = set(manifest.get("resources") or [])
@@ -114,6 +174,9 @@ def main() -> int:
         for s in direct
     )
 
+    live_version, live_catalog_count = verify_live_manifest()
+    compact_version, compact_catalog_count = verify_compact_p2p_manifest()
+
     print(
         "TPB protocol smoke OK:",
         f"version={manifest.get('version', '?')}",
@@ -123,6 +186,10 @@ def main() -> int:
         f"direct={len(direct)}",
         f"p2p={len(p2p)}",
         f"proxy_headers={bool(headers_present)}",
+        f"live_version={live_version}",
+        f"live_catalogs={live_catalog_count}",
+        f"compact_version={compact_version}",
+        f"compact_catalogs={compact_catalog_count}",
     )
     return 0
 
