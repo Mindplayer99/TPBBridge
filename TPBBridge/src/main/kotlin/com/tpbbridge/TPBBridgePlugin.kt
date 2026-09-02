@@ -289,6 +289,7 @@ class TPBBridgePlugin : Plugin() {
             isChecked = checked
         }
 
+        lateinit var editorDialog: AlertDialog
         val seed = current ?: newBridgeProfile(allProfiles.size + 1)
         var availableSources = seed.homeSources
         var workingOrder = reconcileHomeOrder(seed.homeOrder, availableSources)
@@ -411,7 +412,6 @@ class TPBBridgePlugin : Plugin() {
         }
 
         val scroll = ScrollView(activity).apply { addView(root) }
-        lateinit var editorDialog: AlertDialog
         editorDialog = AlertDialog.Builder(activity)
             .setTitle(if (current == null) "Add profile" else "Configure profile")
             .setView(scroll)
