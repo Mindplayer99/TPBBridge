@@ -2,14 +2,15 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
-## v12: broader TPB catalog/live compatibility
+## v13: broader TPB catalog/live compatibility
 
-v12 keeps the v11 profile architecture and playback/debrid behavior, while adding narrow compatibility for TPB catalog forms that are not ordinary `Recent` tube rows:
+v13 keeps the v11 profile architecture and playback/debrid behavior, while adding narrow compatibility for TPB catalog forms that are not ordinary `Recent` tube rows:
 
 - Stripchat/Chaturbate-style live-cam catalogs can appear on Home without enabling unrelated filter catalogs.
 - Extensionless TPB HLS proxy URLs such as `/stripchat/hls/...` are explicitly sent to CloudStream as HLS instead of being mis-inferred as ordinary video.
 - Compact standalone P2P studio/performer/creator catalogs are accepted as Home catalogs.
 - Known TPB P2P `Top` catalogs are used as a fallback when a matching `Recent` catalog is not present, avoiding an empty Home for a deliberate Top-only setup while still preferring Recent when both exist.
+- Performer MegaPack browse catalogs are supported, including TPB's cache-backed MegaPack forms, while MegaPack search/filter catalogs stay off Home.
 - Required-extra Search/Studio/Performer/Tag catalogs remain search-only and are not dumped onto Home.
 
 TPDB/StashDB remain upstream metadata/catalog services. They can enrich the metadata TPBBridge receives, but torrent media cache state is still determined by TPB's configured debrid provider (TorBox/Real-Debrid/etc.), not by TPDB/StashDB.
@@ -81,7 +82,7 @@ Search pagination uses `skip` only when the manifest advertises support for it.
 For every profile, Home processing is:
 
 1. read that profile's configured manifests
-2. identify eligible Recent, supported live, compact P2P, or Top-only fallback catalogs
+2. identify eligible Recent, supported live, compact P2P, MegaPack, or Top-only fallback catalogs
 3. keep required-extra search/filter catalogs off Home
 4. exclude disabled sources before their Home content fetch
 5. isolate individual source failures
@@ -94,7 +95,7 @@ A failing source therefore does not need to destroy the other profile rows.
 
 ## Streams, metadata and debrid
 
-The v12 compatibility work does not replace the existing playback engine.
+The v13 compatibility work does not replace the existing playback engine.
 
 TPBBridge supports direct HTTP/HLS/MP4/DASH/debrid URLs and preserves Stremio request headers, proxy request headers and Referer where provided. Direct variants remain separate CloudStream mirrors and quality labels such as 2160p/1440p/1080p/720p are mapped when TPB exposes enough information. TPB live/direct HLS paths are explicitly recognized even when the proxy URL does not end in `.m3u8`.
 
