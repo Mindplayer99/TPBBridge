@@ -17,9 +17,9 @@ import java.util.Locale
  * manifest. Required-extra catalogs (Search/Studio/Performer/Tag selectors)
  * remain search-only. Normal Recent catalogs remain the preferred Home view.
  *
- * TPB also has two important browse forms which do not contain "Recent":
- * - live-cam catalogs (Stripchat/Chaturbate), and
- * - compact standalone P2P studio/performer catalogs.
+ * TPB also has important browse forms which do not necessarily contain
+ * "Recent": live cams, compact P2P studio/performer catalogs and cache-backed
+ * performer MegaPacks.
  *
  * For known P2P families, a Top catalog is used only when its matching Recent
  * catalog is absent from that manifest. This supports users who deliberately
@@ -63,6 +63,19 @@ internal fun isTpbHomeCatalogDescriptor(
     if (isCompactP2pIdentity && !isSortedVariant) return true
     if (lowerId.contains("compact") && lowerId.startsWith("xxx_")) return true
 
+    // Current TPB exposes Real-Debrid/TorBox cache-backed performer MegaPacks
+    // as normal browse catalogs. Keep their search/filter endpoints out of Home
+    // while allowing the performer packs themselves regardless of whether the
+    // backend chooses a megapack_*, mp_* or display-name based identifier.
+    val isMegaPack = lowerId.startsWith("megapack_") ||
+        lowerId.startsWith("mp_") ||
+        label.contains("megapack")
+    val looksLikeMegaPackFilter = lowerId.endsWith("_search") ||
+        label.contains(" search") ||
+        label.contains(" tag") ||
+        label.contains(" studio")
+    if (isMegaPack && !looksLikeMegaPackFilter && !isSortedVariant) return true
+
     // If a user configures only Top for a known TPB P2P family, don't make the
     // profile look empty. When Recent exists, Recent wins and Top stays hidden
     // to preserve the bridge's one-useful-row behavior.
@@ -83,7 +96,8 @@ private fun isKnownTpbP2pCatalog(lowerId: String): Boolean =
         lowerId == "xxx_top" ||
         lowerId.startsWith("curated_") ||
         lowerId.startsWith("sukebei_") ||
-        lowerId.startsWith("megapack_")
+        lowerId.startsWith("megapack_") ||
+        lowerId.startsWith("mp_")
 
 /**
  * CloudStream infers HLS from a .m3u8 path. TPB live/direct HLS proxies can use
