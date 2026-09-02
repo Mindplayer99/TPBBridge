@@ -45,7 +45,11 @@ internal fun saveProfiles(prefs: SharedPreferences, profiles: List<BridgeProfile
 
 internal fun loadProfilesOrMigrate(prefs: SharedPreferences): List<BridgeProfile> {
     val stored = prefs.getString(PREF_PROFILES, null)
-    if (stored != null) return profilesFromJson(stored)
+    if (stored != null) {
+        val parsed = profilesFromJson(stored)
+        if (parsed.isNotEmpty() || stored.trim() == "[]") return parsed
+        // Corrupt profile JSON should not silently hide a still-valid v10 setup.
+    }
 
     val legacyInput = prefs.getString(PREF_MANIFESTS, "").orEmpty()
     if (parseManifestInput(legacyInput).isEmpty()) return emptyList()
@@ -67,8 +71,7 @@ internal fun loadProfilesOrMigrate(prefs: SharedPreferences): List<BridgeProfile
         tagEnabled = prefs.getBoolean(PREF_FACET_TAG, false)
     )
 
-    // Write the new representation but intentionally leave legacy keys intact for
-    // one-way safety/rollback. The global wipe clears the whole preference file.
+    // Keep legacy keys for rollback safety. The full wipe clears the whole file.
     prefs.edit().putString(PREF_PROFILES, profilesToJson(listOf(legacy))).commit()
     return listOf(legacy)
 }
@@ -141,9 +144,9 @@ internal fun activeFacetRoutes(profile: BridgeProfile): List<FacetRoute> {
     return profile.facetRoutes.filter { homeSourceKey(it.sourceName) !in disabled }
 }
 
-internal fun providerNamesForProfile(profile: BridgeProfile): Set<String> {
-    if (profile.bases.isEmpty()) return emptySet()
-    val names = linkedSetOf(profile.homeName)
+private fun rawProviderNamesForProfile(profile: BridgeProfile): List<String> {
+    if (profile.bases.isEmpty()) return emptyList()
+    val names = mutableListOf(profile.homeName)
     activeSearchGroups(profile).forEach { names += profile.searchPrefix + it.sourceName }
     val activeFacets = activeFacetRoutes(profile)
     if (profile.studioEnabled && activeFacets.any { it.kind == FacetKind.STUDIO }) {
@@ -158,17 +161,24 @@ internal fun providerNamesForProfile(profile: BridgeProfile): Set<String> {
     return names
 }
 
+internal fun providerNamesForProfile(profile: BridgeProfile): Set<String> =
+    rawProviderNamesForProfile(profile).toCollection(linkedSetOf())
+
 /** Returns a user-facing collision message, or null when all provider names are unique. */
 internal fun validateProfileProviderNames(profiles: List<BridgeProfile>): String? {
-    val owners = linkedMapOf<String, Pair<String, String>>()
+    val owners = linkedMapOf<String, String>()
     profiles.forEach { profile ->
-        providerNamesForProfile(profile).forEach { name ->
+        val local = mutableSetOf<String>()
+        rawProviderNamesForProfile(profile).forEach { name ->
             val key = name.trim().lowercase(Locale.ROOT)
-            val previous = owners[key]
-            if (previous != null && previous.first != profile.id) {
+            if (!local.add(key)) {
+                return "Provider name ‘$name’ is duplicated inside this profile. Change the Home name or Search prefix."
+            }
+            val previousOwner = owners[key]
+            if (previousOwner != null && previousOwner != profile.id) {
                 return "Provider name ‘$name’ is already used by another profile. Change the Home name or Search prefix."
             }
-            owners[key] = profile.id to name
+            owners[key] = profile.id
         }
     }
     return null
