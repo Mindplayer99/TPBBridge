@@ -69,15 +69,24 @@ internal fun isSourceDisabled(source: String, disabledSources: Collection<String
 }
 
 /**
- * Discover normal Home/Recent source names in manifest order. This mirrors the
- * same rule used by Catalog.isHomeCatalog(): required-extra catalogs are never
- * Home rows, and only Recent catalogs are included.
+ * Discover manageable Home source names in manifest order. The exact same TPB
+ * compatibility rule is used by the runtime Home provider so source management
+ * never disagrees with what CloudStream can actually render.
  */
 internal fun discoverHomeSources(bases: List<String>): List<String> {
     val sources = mutableListOf<String>()
     bases.forEach { base ->
         val root = JSONObject(httpGetText("$base/manifest.json"))
         val catalogs = root.optJSONArray("catalogs") ?: JSONArray()
+        val manifestIds = buildSet {
+            for (i in 0 until catalogs.length()) {
+                catalogs.optJSONObject(i)?.optString("id")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { add(it) }
+            }
+        }
+
         for (i in 0 until catalogs.length()) {
             val c = catalogs.optJSONObject(i) ?: continue
             val name = c.optString("name", "")
@@ -94,8 +103,7 @@ internal fun discoverHomeSources(bases: List<String>): List<String> {
                     }
                 }
             }
-            if (hasRequired) continue
-            if (!"$name $id".lowercase(Locale.ROOT).contains("recent")) continue
+            if (!isTpbHomeCatalogDescriptor(name, id, hasRequired, manifestIds)) continue
 
             val source = deriveSourceName(name, id)
             if (source.isNotBlank() && !isGenericSourceName(source)) sources += source
@@ -237,8 +245,8 @@ internal fun orderHomeRows(rows: Collection<HomeRow>, homeOrder: List<String>): 
 }
 
 /**
- * v9 Home provider. Disabled sources are removed before Home catalog network
- * requests. Search groups passed here are already filtered by the plugin.
+ * Home provider with disabled-source filtering before network requests. Search
+ * groups passed here are already filtered by the plugin.
  */
 internal class TPBOrderedHomeProvider(
     override var name: String,
@@ -259,9 +267,16 @@ internal class TPBOrderedHomeProvider(
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val rows = manifestBases.amap { base ->
             val manifest = fetchManifest(base) ?: return@amap emptyList<HomeRow>()
+            val manifestIds = manifest.catalogs.map { it.id }.filter { it.isNotBlank() }.toSet()
             manifest.catalogs
                 .filter { catalog ->
-                    if (!catalog.isHomeCatalog()) return@filter false
+                    if (!isTpbHomeCatalogDescriptor(
+                            catalog.name,
+                            catalog.id,
+                            catalog.hasRequiredExtra(),
+                            manifestIds
+                        )
+                    ) return@filter false
                     val source = deriveSourceName(catalog.name, catalog.id)
                     homeSourceKey(source) !in disabledKeys
                 }
@@ -363,7 +378,7 @@ internal fun showHomeSourceManagerDialog(
     if (defaults.isEmpty()) {
         AlertDialog.Builder(activity)
             .setTitle("Manage sources")
-            .setMessage("No sources are available yet. Save + refresh once after enabling Recent or Search in TPB.")
+            .setMessage("No sources are available yet. Save + refresh once after enabling a Home/Recent/live or Search catalog in TPB.")
             .setPositiveButton("OK", null)
             .show()
         return
