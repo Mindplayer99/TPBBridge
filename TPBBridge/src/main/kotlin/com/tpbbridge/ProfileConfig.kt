@@ -16,6 +16,7 @@ import java.util.Locale
 import java.util.UUID
 
 internal const val PREF_PROFILES = "profiles_v11"
+internal const val PREF_PROFILES_BACKUP = "profiles_v11_backup"
 
 internal data class BridgeProfile(
     val id: String,
@@ -62,8 +63,9 @@ internal fun saveProfilesJson(profiles: List<BridgeProfile>): String {
     return out.toString()
 }
 
-internal fun loadProfilesJson(json: String): List<BridgeProfile> {
-    if (json.isBlank()) return emptyList()
+/** Null means malformed/corrupt; an empty list is a valid saved configuration. */
+internal fun parseProfilesJson(json: String): List<BridgeProfile>? {
+    if (json.isBlank()) return null
     return try {
         val array = JSONArray(json)
         val seenIds = mutableSetOf<String>()
@@ -112,12 +114,48 @@ internal fun loadProfilesJson(json: String): List<BridgeProfile> {
             }
         }
     } catch (_: Throwable) {
-        emptyList()
+        null
     }
 }
 
-internal fun persistProfiles(prefs: SharedPreferences, profiles: List<BridgeProfile>): Boolean =
-    prefs.edit().putString(PREF_PROFILES, saveProfilesJson(profiles)).commit()
+internal fun loadProfilesJson(json: String): List<BridgeProfile> =
+    parseProfilesJson(json) ?: emptyList()
+
+/**
+ * Keep one last known-good profile snapshot. A valid primary value always wins,
+ * including an intentionally saved empty list, so deleted profiles cannot be
+ * resurrected by the backup.
+ */
+internal fun persistProfiles(prefs: SharedPreferences, profiles: List<BridgeProfile>): Boolean {
+    val next = saveProfilesJson(profiles)
+    val current = prefs.getString(PREF_PROFILES, null)
+    val editor = prefs.edit()
+    if (!current.isNullOrBlank() && parseProfilesJson(current) != null) {
+        editor.putString(PREF_PROFILES_BACKUP, current)
+    }
+    return editor.putString(PREF_PROFILES, next).commit()
+}
+
+private fun loadSavedProfilesSafely(prefs: SharedPreferences): List<BridgeProfile>? {
+    if (!prefs.contains(PREF_PROFILES)) return null
+
+    val primaryRaw = prefs.getString(PREF_PROFILES, "").orEmpty()
+    val primary = parseProfilesJson(primaryRaw)
+    if (primary != null) return primary
+
+    val backupRaw = prefs.getString(PREF_PROFILES_BACKUP, "").orEmpty()
+    val backup = parseProfilesJson(backupRaw)
+    if (backup != null) {
+        // Best-effort self-heal. Even if this commit fails, use the valid backup
+        // for the current session instead of making every profile appear gone.
+        prefs.edit().putString(PREF_PROFILES, backupRaw).commit()
+        return backup
+    }
+
+    // Both v11 copies are invalid. Return null so legacy v10 data, if it still
+    // exists from an interrupted migration, gets one final recovery chance.
+    return null
+}
 
 /**
  * v10 -> v11 migration. The old configuration becomes exactly one profile, so
@@ -128,14 +166,16 @@ internal fun persistProfiles(prefs: SharedPreferences, profiles: List<BridgeProf
  * that succeeds, avoiding a destructive partial migration.
  */
 internal fun loadProfilesWithMigration(prefs: SharedPreferences): List<BridgeProfile> {
-    if (prefs.contains(PREF_PROFILES)) {
-        return loadProfilesJson(prefs.getString(PREF_PROFILES, "[]").orEmpty())
-    }
+    loadSavedProfilesSafely(prefs)?.let { return it }
 
     val raw = prefs.getString(PREF_MANIFESTS, "").orEmpty()
     val bases = parseManifestInput(raw)
     if (bases.isEmpty()) {
-        prefs.edit().putString(PREF_PROFILES, "[]").commit()
+        // If v11 existed but both primary and backup were malformed, do not
+        // overwrite them with an empty value. This preserves evidence/data for
+        // recovery instead of turning corruption into a destructive save.
+        if (prefs.contains(PREF_PROFILES)) return emptyList()
+        persistProfiles(prefs, emptyList())
         return emptyList()
     }
 
