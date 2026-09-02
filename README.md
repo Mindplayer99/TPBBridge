@@ -2,9 +2,21 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v12: broader TPB catalog/live compatibility
+
+v12 keeps the v11 profile architecture and playback/debrid behavior, while adding narrow compatibility for TPB catalog forms that are not ordinary `Recent` tube rows:
+
+- Stripchat/Chaturbate-style live-cam catalogs can appear on Home without enabling unrelated filter catalogs.
+- Extensionless TPB HLS proxy URLs such as `/stripchat/hls/...` are explicitly sent to CloudStream as HLS instead of being mis-inferred as ordinary video.
+- Compact standalone P2P studio/performer/creator catalogs are accepted as Home catalogs.
+- Known TPB P2P `Top` catalogs are used as a fallback when a matching `Recent` catalog is not present, avoiding an empty Home for a deliberate Top-only setup while still preferring Recent when both exist.
+- Required-extra Search/Studio/Performer/Tag catalogs remain search-only and are not dumped onto Home.
+
+TPDB/StashDB remain upstream metadata/catalog services. They can enrich the metadata TPBBridge receives, but torrent media cache state is still determined by TPB's configured debrid provider (TorBox/Real-Debrid/etc.), not by TPDB/StashDB.
+
 ## v11: independent profiles
 
-TPBBridge now treats a **profile** as one independent setup. A profile may contain one manifest URL or several split manifest URLs that belong together.
+TPBBridge treats a **profile** as one independent setup. A profile may contain one manifest URL or several split manifest URLs that belong together.
 
 Each profile has its own:
 
@@ -18,7 +30,7 @@ Each profile has its own:
 
 Profiles do not share source state. If the same upstream source appears in two different profiles, the two instances remain independent. Within one profile, same-source rows/routes from split manifests can still be merged as before.
 
-Existing v10 installations are migrated automatically into one v11 profile with the existing manifest URLs, Home name, Search prefix, source order, disabled-source state, Search routes and optional filter settings preserved.
+Existing v10 installations are migrated automatically into one v11+ profile with the existing manifest URLs, Home name, Search prefix, source order, disabled-source state, Search routes and optional filter settings preserved.
 
 ## Setup
 
@@ -32,7 +44,7 @@ Existing v10 installations are migrated automatically into one v11 profile with 
 8. Press **Save + refresh**. No CloudStream restart is required.
 9. After sources have been discovered, use **Manage sources** to enable/disable sources and arrange Home rows. Press **Save + refresh** to apply those source changes.
 
-For a clean Home layout, enable the desired normal/Recent catalogs in TPB. Per-source Search requires Search catalogs in the manifest. Studio/Performer/Tag support requires the matching catalogs/options upstream; TPBBridge keeps those optional filters out of Home.
+For a clean Home layout, enable only the TPB browse/live/P2P catalogs you actually want upstream. Per-source Search requires Search catalogs in the manifest. Studio/Performer/Tag filter support requires matching catalogs/options upstream; TPBBridge keeps those optional required-extra filters out of Home.
 
 ## Profile behavior
 
@@ -66,24 +78,25 @@ Search pagination uses `skip` only when the manifest advertises support for it.
 
 ## Home/catalogue behavior
 
-For every profile, normal Home processing remains:
+For every profile, Home processing is:
 
 1. read that profile's configured manifests
-2. exclude disabled sources before their Home content fetch
-3. fetch eligible Home/Recent catalogs
-4. isolate individual source failures
-5. merge same-source rows inside the profile
-6. deduplicate items
-7. apply the profile's saved Home order
-8. return the rows to CloudStream
+2. identify eligible Recent, supported live, compact P2P, or Top-only fallback catalogs
+3. keep required-extra search/filter catalogs off Home
+4. exclude disabled sources before their Home content fetch
+5. isolate individual source failures
+6. merge same-source rows inside the profile
+7. deduplicate items
+8. apply the profile's saved Home order
+9. return the rows to CloudStream
 
 A failing source therefore does not need to destroy the other profile rows.
 
 ## Streams, metadata and debrid
 
-The v11 profile work does not replace the existing playback engine.
+The v12 compatibility work does not replace the existing playback engine.
 
-TPBBridge supports direct HTTP/HLS/MP4/DASH/debrid URLs and preserves Stremio request headers, proxy request headers and Referer where provided. Direct variants remain separate CloudStream mirrors and quality labels such as 2160p/1440p/1080p/720p are mapped when TPB exposes enough information.
+TPBBridge supports direct HTTP/HLS/MP4/DASH/debrid URLs and preserves Stremio request headers, proxy request headers and Referer where provided. Direct variants remain separate CloudStream mirrors and quality labels such as 2160p/1440p/1080p/720p are mapped when TPB exposes enough information. TPB live/direct HLS paths are explicitly recognized even when the proxy URL does not end in `.m3u8`.
 
 TPBBridge does not call a debrid API itself. TPB remains responsible for resolving TorBox/Real-Debrid/etc. A resolved HTTPS/debrid stream is passed through. When TPB instead returns an `infoHash` plus tracker/source information, TPBBridge provides the P2P magnet fallback to CloudStream.
 
@@ -109,7 +122,7 @@ The wipe is not placed in automatic plugin unload/update handling because CloudS
 
 Built against `com.lagradost:cloudstream3:pre-release`, marked beta-only (`status = 3`) and intended for Red/pre-release CloudStream.
 
-Release CI compiles the plugin, verifies the generated `.cs3` and published metadata/hash/size, runs a public TPB protocol smoke test, and only then publishes the `builds` branch.
+Release CI compiles the plugin, verifies the generated `.cs3` and published metadata/hash/size, runs a public TPB protocol smoke test (including live-manifest and compact-P2P manifest checks), and only then publishes the `builds` branch.
 
 ## Attribution and license
 
