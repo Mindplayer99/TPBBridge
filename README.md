@@ -2,6 +2,23 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v16: complete catalogue paging and lossless compact streams
+
+v16 addresses the concrete Nuvio-versus-CloudStream differences visible with large TPB P2P/studio catalogs:
+
+- Home rows are registered independently after **Save + refresh**, so expanding one row requests only that row rather than every catalog in the profile.
+- Paged catalogs now return a real `hasNext` state. CloudStream can continue beyond TPB's first result batch instead of stopping at an exact configured limit.
+- The next Stremio `skip` value is calculated from the number of entries actually returned on earlier pages. It therefore works with TPB profiles configured for different `maxResults` values instead of assuming every page contains 20 items.
+- Compact `jstrg:` catalog ids remain the playback ids. A metadata response can no longer replace a multi-quality grouped id with one `jstrm:` member and accidentally reduce a 4K + 1080p group to only one cached/raw pair. Explicit MegaPack child-video ids remain supported.
+- Mirror names no longer repeat the resolution that CloudStream appends itself. TPB names such as `[TB+] 2160p` and `Torrent 1080p` render as `[TB+] … 2160p` and `Torrent … 1080p`, with available size/seed information kept in the compact label.
+- Direct mirrors sharing a URL but requiring different request headers remain distinct. Exact raw-torrent duplicates merge trackers/subtitles rather than discarding them. Resolved/debrid links still appear before raw P2P and higher qualities remain first.
+- Successful Search results are reused for two minutes across individual, combined and filter providers; metadata is reused for five minutes; concurrent duplicate manifest/catalog/meta requests are coalesced. Failed requests are never cached.
+- Live Home rows use a shorter 20-second cache. Stream, TorBox/debrid and live playback URLs are never cached or preloaded, because those links can expire and must be obtained fresh when Play is pressed.
+- Each saved manifest now has its own on/off control. Turning one off stops its Home, Search, metadata and stream requests without deleting its URL; turning it back on restores it after **Save + refresh**.
+- Metadata keeps TPB cast, runtime, rating and logo fields when supplied, and common `Studio`/`Released` descriptions are split into readable lines.
+
+The first cold Home load still waits for CloudStream to finish all enabled row requests before the host app displays the complete provider response. Nuvio can present addon rows more progressively. TPBBridge reduces duplicate work and makes later pages independent, but it cannot remove that CloudStream host behavior without initially omitting rows. Likewise, TPBBridge exposes every distinct stream the selected TPB endpoint returns; it cannot invent a missing TorBox cache hit, resolution, poster or raw torrent.
+
 ## v15: reduced manifest and repeat-Home latency
 
 v15 removes avoidable work when profiles contain many TPB/P2P catalogs:
@@ -63,11 +80,12 @@ Existing v10 installations are migrated automatically into one v11+ profile with
 3. Existing v10 users will see their old setup as one profile automatically.
 4. Tap a profile to configure it, or tap **+ Add profile**.
 5. Add one or more manifest URLs, one URL per line.
-6. Choose that profile's **Home name** and optional **Search prefix**.
-7. Optionally enable **Search through Home name** and/or Studio, Performer and Tag searches.
-8. Choose whether live regions/categories should be combined or shown as separate rows for this profile.
-9. Press **Save + refresh**. No CloudStream restart is required.
-10. After sources have been discovered, use **Manage sources** to enable/disable sources and arrange Home rows. Press **Save + refresh** to apply those source changes.
+6. Use **Enable or disable manifests** when a saved manifest should be paused without deleting its URL.
+7. Choose that profile's **Home name** and optional **Search prefix**.
+8. Optionally enable **Search through Home name** and/or Studio, Performer and Tag searches.
+9. Choose whether live regions/categories should be combined or shown as separate rows for this profile.
+10. Press **Save + refresh**. No CloudStream restart is required.
+11. After sources have been discovered, use **Manage sources** to enable/disable sources and arrange Home rows. Press **Save + refresh** to apply those source changes.
 
 For a clean Home layout, enable only the TPB browse/live/P2P catalogs you actually want upstream. Per-source Search requires Search catalogs in the manifest. Studio/Performer/Tag filter support requires matching catalogs/options upstream; TPBBridge keeps those optional required-extra filters out of Home.
 
@@ -78,6 +96,8 @@ A profile's manifest URLs are resolved only inside that profile. This is importa
 Provider names must remain unique in CloudStream. If two profiles would create the same Home/Search/filter provider name, TPBBridge refuses the save and asks for a different Home name or Search prefix instead of silently registering an ambiguous provider.
 
 Removing one profile removes only that profile's active Home/Search/filter providers and stored profile configuration. Other TPBBridge profiles remain unchanged.
+
+A disabled manifest stays in the profile's saved URL list but is excluded before provider registration and discovery. This is separate from disabling one discovered source: a manifest switch pauses everything owned by that manifest, while a source switch hides only that source inside the active manifest group.
 
 ## Source management and Home ordering
 
@@ -101,7 +121,7 @@ Selecting the combined Home provider and its individual source providers at the 
 
 Studio, Performer and Tag are optional search-only providers. TPBBridge uses only matching required Stremio genre catalogs/options advertised by the manifest. Exact option matches are preferred and partial matching is bounded to avoid uncontrolled request fanout.
 
-Search pagination uses `skip` only when the manifest advertises support for it.
+Search pagination uses `skip` only when the manifest advertises support for it, and derives the next offset from the preceding response size instead of a fixed page-size assumption.
 
 ## Home/catalogue behavior
 
@@ -127,7 +147,7 @@ TPBBridge supports direct HTTP/HLS/MP4/DASH/debrid URLs and preserves Stremio re
 
 TPBBridge does not call a debrid API itself. TPB remains responsible for resolving TorBox/Real-Debrid/etc. A resolved HTTPS/debrid stream is passed through. When TPB instead returns an `infoHash` plus tracker/source information, TPBBridge provides the P2P magnet fallback to CloudStream.
 
-Subtitles are forwarded and deduplicated. Metadata uses the Stremio meta route with catalog metadata as fallback and keeps poster/background/year/genres/description data where available. Landscape `posterShape` catalogs can use CloudStream's horizontal-card layout.
+Subtitles are forwarded and deduplicated. Metadata uses the Stremio meta route with catalog metadata as fallback and keeps poster/background/year/genres/description/cast/runtime/rating/logo data where available. Landscape `posterShape` catalogs can use CloudStream's horizontal-card layout.
 
 Stremio `fileIdx` is preserved in raw magnets using the `index` parameter understood by CloudStream's torrent server. This prevents the former unconditional file-0 selection. A resolved direct/debrid URL remains more reliable: a raw torrent can still fail if peers are unavailable or the selected file's container/codec is unsupported by the installed CloudStream player.
 
