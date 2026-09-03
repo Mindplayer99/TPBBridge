@@ -206,8 +206,11 @@ internal abstract class TPBBaseProvider(
                         id = video.id
                     )
                 ) {
-                    name = fixTitle(video.title?.takeIf { it.isNotBlank() } ?: "Video ${index + 1}")
-                    season = 1
+                    name = collectionVideoTitle(video.title, index + 1)
+                    // CloudStream needs unique episode indexes to expose more
+                    // than one Play target, but season 0 is rendered as no
+                    // season number. The collection is named Videos below.
+                    season = 0
                     episode = index + 1
                     posterUrl = video.thumbnail ?: video.poster
                     description = formatMetadataDescription(video.overview ?: video.description)
@@ -232,7 +235,7 @@ internal abstract class TPBBaseProvider(
                 duration = parseRuntimeMinutes(meta.runtime ?: fallback.runtime)
                 score = Score.from10(meta.imdbRating ?: fallback.imdbRating)
                 logoUrl = meta.logo ?: fallback.logo
-                seasonNames = listOf(SeasonData(season = 1, name = "Videos", displaySeason = null))
+                seasonNames = listOf(SeasonData(season = 0, name = "Videos", displaySeason = null))
             }
         }
 
