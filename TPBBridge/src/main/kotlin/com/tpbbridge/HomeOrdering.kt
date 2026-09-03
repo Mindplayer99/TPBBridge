@@ -79,7 +79,7 @@ internal fun discoverHomeSources(
 ): List<String> {
     val sources = mutableListOf<String>()
     bases.forEach { base ->
-        val root = JSONObject(httpGetText("$base/manifest.json"))
+        val root = JSONObject(fetchManifestText(base))
         val catalogs = root.optJSONArray("catalogs") ?: JSONArray()
         val manifestIds = buildSet {
             for (i in 0 until catalogs.length()) {
