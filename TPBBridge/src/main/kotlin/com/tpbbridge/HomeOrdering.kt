@@ -73,7 +73,10 @@ internal fun isSourceDisabled(source: String, disabledSources: Collection<String
  * compatibility rule is used by the runtime Home provider so source management
  * never disagrees with what CloudStream can actually render.
  */
-internal fun discoverHomeSources(bases: List<String>): List<String> {
+internal fun discoverHomeSources(
+    bases: List<String>,
+    separateLiveCategories: Boolean = false
+): List<String> {
     val sources = mutableListOf<String>()
     bases.forEach { base ->
         val root = JSONObject(httpGetText("$base/manifest.json"))
@@ -105,7 +108,7 @@ internal fun discoverHomeSources(bases: List<String>): List<String> {
             }
             if (!isTpbHomeCatalogDescriptor(name, id, hasRequired, manifestIds)) continue
 
-            val source = deriveSourceName(name, id)
+            val source = homeCatalogSourceName(name, id, separateLiveCategories)
             if (source.isNotBlank() && !isGenericSourceName(source)) sources += source
         }
     }
@@ -254,7 +257,8 @@ internal class TPBOrderedHomeProvider(
     internal val searchGroups: List<SearchRouteGroup>,
     internal val combinedSearchEnabled: Boolean,
     internal val homeOrder: List<String>,
-    internal val disabledSources: List<String>
+    internal val disabledSources: List<String>,
+    internal val separateLiveCategories: Boolean
 ) : TPBBaseProvider(manifestBases) {
     override var mainUrl: String = "$SAFE_MAIN_URL/home"
     override var lang: String = "en"
@@ -277,10 +281,21 @@ internal class TPBOrderedHomeProvider(
                             manifestIds
                         )
                     ) return@filter false
-                    val source = deriveSourceName(catalog.name, catalog.id)
+                    val source = homeCatalogSourceName(
+                        catalog.name,
+                        catalog.id,
+                        separateLiveCategories
+                    )
                     homeSourceKey(source) !in disabledKeys
                 }
-                .amap { catalog -> catalog.toHomeRow(base, this, page) }
+                .amap { catalog ->
+                    catalog.toHomeRow(
+                        base,
+                        this,
+                        page,
+                        homeCatalogSourceName(catalog.name, catalog.id, separateLiveCategories)
+                    )
+                }
                 .filter { it.items.isNotEmpty() }
         }.flatten()
 
