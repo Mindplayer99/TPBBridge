@@ -2,6 +2,18 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v14: real MegaPack videos and exact-file P2P
+
+v14 fixes the two protocol mismatches that most affected MegaPack and raw torrent playback:
+
+- Stremio metadata containing multiple `videos` is now rendered as one CloudStream collection named **Videos**, with one selectable card per real TPB child video. TPBBridge keeps the content type as `Others` rather than calling creator scenes a TV series, and it ignores TPB's synthetic season grouping.
+- A metadata item advertising exactly one child video now resolves that canonical child id instead of assuming the parent metadata id is also its stream id.
+- TPB's `fileIdx` is written into raw magnet fallbacks as `index=…`, matching CloudStream's built-in torrent selector. Multi-file torrents therefore request the intended scene instead of always defaulting to file 0.
+- Resolved direct/debrid links are listed before raw P2P fallbacks, with higher advertised qualities first inside each class. Equivalent links preserve TPB's original order and genuinely different cached/raw mirrors remain separate.
+- Every profile now has **Separate live category rows**. Off (the default) combines enabled live catalogs into one Stripchat row and one Chaturbate row. On keeps enabled regions/categories as individual rows. Profiles without those live catalogs safely ignore the setting.
+
+CloudStream implements all multi-item detail pages through its episode component. TPBBridge can label the collection **Videos**, preserve real scene titles and avoid TV-series typing, but it cannot replace a global `Episodes` heading hardcoded by the installed CloudStream app.
+
 ## v13: broader TPB catalog/live compatibility
 
 v13 keeps the v11 profile architecture and playback/debrid behavior, while adding narrow compatibility for TPB catalog forms that are not ordinary `Recent` tube rows:
@@ -42,8 +54,9 @@ Existing v10 installations are migrated automatically into one v11+ profile with
 5. Add one or more manifest URLs, one URL per line.
 6. Choose that profile's **Home name** and optional **Search prefix**.
 7. Optionally enable **Search through Home name** and/or Studio, Performer and Tag searches.
-8. Press **Save + refresh**. No CloudStream restart is required.
-9. After sources have been discovered, use **Manage sources** to enable/disable sources and arrange Home rows. Press **Save + refresh** to apply those source changes.
+8. Choose whether live regions/categories should be combined or shown as separate rows for this profile.
+9. Press **Save + refresh**. No CloudStream restart is required.
+10. After sources have been discovered, use **Manage sources** to enable/disable sources and arrange Home rows. Press **Save + refresh** to apply those source changes.
 
 For a clean Home layout, enable only the TPB browse/live/P2P catalogs you actually want upstream. Per-source Search requires Search catalogs in the manifest. Studio/Performer/Tag filter support requires matching catalogs/options upstream; TPBBridge keeps those optional required-extra filters out of Home.
 
@@ -62,6 +75,8 @@ Removing one profile removes only that profile's active Home/Search/filter provi
 **Order** changes only that profile's Home row sequence. It does not alter metadata, stream URLs, debrid behavior, request headers, subtitles or playback.
 
 Same-source rows from split manifests inside a profile are merged before ordering. New sources are enabled by default and appended without destroying the saved order. Temporarily unavailable sources retain their remembered position and disabled state. Resetting order never re-enables disabled sources.
+
+For live catalogs, **Separate live category rows** is profile-specific. With it off, all enabled Stripchat categories share one Stripchat row and all enabled Chaturbate categories share one Chaturbate row. With it on, TPBBridge preserves the category names as separate manageable rows. It does not combine the two live providers with each other.
 
 Disabling a source does not rewrite or delete anything from the remote TPB manifest. Upstream removal must still be done in TPB itself.
 
@@ -97,13 +112,15 @@ A failing source therefore does not need to destroy the other profile rows.
 
 The v13 compatibility work does not replace the existing playback engine.
 
-TPBBridge supports direct HTTP/HLS/MP4/DASH/debrid URLs and preserves Stremio request headers, proxy request headers and Referer where provided. Direct variants remain separate CloudStream mirrors and quality labels such as 2160p/1440p/1080p/720p are mapped when TPB exposes enough information. TPB live/direct HLS paths are explicitly recognized even when the proxy URL does not end in `.m3u8`.
+TPBBridge supports direct HTTP/HLS/MP4/DASH/debrid URLs and preserves Stremio request headers, proxy request headers and Referer where provided. Direct variants remain separate CloudStream mirrors and quality labels such as 2160p/1440p/1080p/720p are mapped when TPB exposes enough information. Resolved links are ordered above P2P fallbacks and by advertised quality. TPB live/direct HLS paths are explicitly recognized even when the proxy URL does not end in `.m3u8`.
 
 TPBBridge does not call a debrid API itself. TPB remains responsible for resolving TorBox/Real-Debrid/etc. A resolved HTTPS/debrid stream is passed through. When TPB instead returns an `infoHash` plus tracker/source information, TPBBridge provides the P2P magnet fallback to CloudStream.
 
 Subtitles are forwarded and deduplicated. Metadata uses the Stremio meta route with catalog metadata as fallback and keeps poster/background/year/genres/description data where available. Landscape `posterShape` catalogs can use CloudStream's horizontal-card layout.
 
-Stremio `fileIdx` is used where useful for stream deduplication, but CloudStream's generic magnet link path does not expose the same reliable exact-file-index semantics as a resolved Stremio/debrid URL. Resolved direct URLs remain preferred for exact multi-file playback.
+Stremio `fileIdx` is preserved in raw magnets using the `index` parameter understood by CloudStream's torrent server. This prevents the former unconditional file-0 selection. A resolved direct/debrid URL remains more reliable: a raw torrent can still fail if peers are unavailable or the selected file's container/codec is unsupported by the installed CloudStream player.
+
+TPBBridge never fabricates a 4K/1080p or cached/raw mirror. It exposes each distinct stream returned by the configured TPB endpoint. If TPB returns only one quality, hides P2P fallback links, or has no matching cached torrent, the bridge cannot truthfully create the missing option.
 
 TPBBridge does not invent a universal cached/uncached badge when TPB has not supplied reliable cache state.
 
