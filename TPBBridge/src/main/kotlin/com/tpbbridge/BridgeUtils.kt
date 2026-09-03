@@ -54,6 +54,8 @@ import com.lagradost.cloudstream3.utils.SubtitleHelper
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -202,9 +204,28 @@ internal fun jsonCatalogSearchRequired(c: JSONObject): Boolean {
 internal data class ManifestCacheEntry(val createdAt: Long, val manifest: Manifest)
 internal data class ManifestTextCacheEntry(val createdAt: Long, val text: String)
 internal data class HomeCatalogCacheEntry(val createdAt: Long, val entries: List<CatalogEntry>)
+internal data class SearchCatalogCacheEntry(val createdAt: Long, val entries: List<CatalogEntry>)
+internal data class MetadataCacheEntry(val createdAt: Long, val entry: CatalogEntry)
 internal val manifestCache = ConcurrentHashMap<String, ManifestCacheEntry>()
 internal val manifestTextCache = ConcurrentHashMap<String, ManifestTextCacheEntry>()
 internal val homeCatalogCache = ConcurrentHashMap<String, HomeCatalogCacheEntry>()
+internal val searchCatalogCache = ConcurrentHashMap<String, SearchCatalogCacheEntry>()
+internal val metadataCache = ConcurrentHashMap<String, MetadataCacheEntry>()
+private val requestLocks = Array(32) { Mutex() }
+
+private fun requestLock(key: String): Mutex =
+    requestLocks[(key.hashCode() and Int.MAX_VALUE) % requestLocks.size]
+
+private fun homeCatalogPageKey(base: String, type: String, catalogId: String, page: Int): String =
+    "${baseRef(base)}|$type|$catalogId|${page.coerceAtLeast(1)}"
+
+private fun searchCatalogPageKey(
+    base: String,
+    type: String,
+    catalogId: String,
+    extras: String,
+    page: Int
+): String = "${baseRef(base)}|$type|$catalogId|$extras|${page.coerceAtLeast(1)}"
 
 /**
  * Settings discovery is synchronous because it runs on TPBBridge's background
@@ -229,12 +250,18 @@ internal suspend fun fetchManifest(base: String): Manifest? {
     val now = System.currentTimeMillis()
     manifestCache[base]?.takeIf { now - it.createdAt < MANIFEST_CACHE_MS }?.let { return it.manifest }
 
-    return try {
-        app.get("$base/manifest.json", timeout = 60L).parsedSafe<Manifest>()?.also {
-            manifestCache[base] = ManifestCacheEntry(now, it)
+    return requestLock("manifest|$base").withLock {
+        val lockedNow = System.currentTimeMillis()
+        manifestCache[base]
+            ?.takeIf { lockedNow - it.createdAt < MANIFEST_CACHE_MS }
+            ?.let { return@withLock it.manifest }
+        try {
+            app.get("$base/manifest.json", timeout = 60L).parsedSafe<Manifest>()?.also {
+                manifestCache[base] = ManifestCacheEntry(lockedNow, it)
+            }
+        } catch (_: Throwable) {
+            null
         }
-    } catch (_: Throwable) {
-        null
     }
 }
 
@@ -244,27 +271,120 @@ internal suspend fun fetchHomeCatalogEntries(
     type: String,
     catalogId: String,
     page: Int,
-    supportsSkip: Boolean
+    supportsSkip: Boolean,
+    cacheTtlMs: Long = HOME_CATALOG_CACHE_MS
 ): List<CatalogEntry>? {
     val safePage = page.coerceAtLeast(1)
-    val skip = (safePage - 1) * SEARCH_PAGE_SIZE
-    val key = "${baseRef(base)}|$type|$catalogId|$safePage"
+    if (safePage > 1 && !supportsSkip) return emptyList()
+    val key = homeCatalogPageKey(base, type, catalogId, safePage)
     val now = System.currentTimeMillis()
     homeCatalogCache[key]
-        ?.takeIf { now - it.createdAt < HOME_CATALOG_CACHE_MS }
+        ?.takeIf { now - it.createdAt < cacheTtlMs }
         ?.let { return it.entries }
 
-    return try {
-        val suffix = if (safePage > 1 && supportsSkip) "/skip=$skip" else ""
-        val response = app.get(
-            "$base/catalog/${encodePath(type)}/${encodePath(catalogId)}$suffix.json",
-            timeout = 90L
-        ).parsedSafe<CatalogResponse>() ?: return null
-        response.metas.orEmpty().also { entries ->
-            homeCatalogCache[key] = HomeCatalogCacheEntry(now, entries)
+    return requestLock("home|$key").withLock {
+        val lockedNow = System.currentTimeMillis()
+        homeCatalogCache[key]
+            ?.takeIf { lockedNow - it.createdAt < cacheTtlMs }
+            ?.let { return@withLock it.entries }
+        try {
+            val priorCount = (1 until safePage).sumOf { previousPage ->
+                homeCatalogCache[homeCatalogPageKey(base, type, catalogId, previousPage)]
+                    ?.entries
+                    ?.size
+                    ?: SEARCH_PAGE_SIZE
+            }
+            val suffix = if (safePage > 1) "/skip=$priorCount" else ""
+            val response = app.get(
+                "$base/catalog/${encodePath(type)}/${encodePath(catalogId)}$suffix.json",
+                timeout = 90L
+            ).parsedSafe<CatalogResponse>() ?: return@withLock null
+            response.metas.orEmpty().also { entries ->
+                homeCatalogCache[key] = HomeCatalogCacheEntry(lockedNow, entries)
+            }
+        } catch (_: Throwable) {
+            null
         }
-    } catch (_: Throwable) {
-        null
+    }
+}
+
+/**
+ * Reuse only successful catalog-query JSON. This cache is shared by individual
+ * Search, combined Search and facet providers, so selecting overlapping
+ * CloudStream providers does not repeatedly hit the same TPB endpoint.
+ */
+internal suspend fun fetchSearchCatalogEntries(
+    base: String,
+    type: String,
+    catalogId: String,
+    extras: String,
+    page: Int = 1,
+    supportsSkip: Boolean = false
+): List<CatalogEntry>? {
+    val safePage = page.coerceAtLeast(1)
+    if (safePage > 1 && !supportsSkip) return emptyList()
+    val key = searchCatalogPageKey(base, type, catalogId, extras, safePage)
+    val now = System.currentTimeMillis()
+    searchCatalogCache[key]
+        ?.takeIf { now - it.createdAt < SEARCH_CATALOG_CACHE_MS }
+        ?.let { return it.entries }
+
+    return requestLock("search|$key").withLock {
+        val lockedNow = System.currentTimeMillis()
+        searchCatalogCache[key]
+            ?.takeIf { lockedNow - it.createdAt < SEARCH_CATALOG_CACHE_MS }
+            ?.let { return@withLock it.entries }
+        try {
+            val priorCount = (1 until safePage).sumOf { previousPage ->
+                searchCatalogCache[
+                    searchCatalogPageKey(base, type, catalogId, extras, previousPage)
+                ]?.entries?.size ?: SEARCH_PAGE_SIZE
+            }
+            val pagedExtras = if (safePage > 1) "$extras&skip=$priorCount" else extras
+            val response = app.get(
+                "$base/catalog/${encodePath(type)}/${encodePath(catalogId)}/$pagedExtras.json",
+                timeout = 90L
+            ).parsedSafe<CatalogResponse>() ?: return@withLock null
+            response.metas.orEmpty().also { entries ->
+                searchCatalogCache[key] = SearchCatalogCacheEntry(lockedNow, entries)
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+}
+
+/** Metadata is safe to reuse; stream/debrid responses deliberately are not. */
+internal suspend fun fetchMetadataEntry(
+    base: String,
+    type: String,
+    id: String
+): CatalogEntry? {
+    val key = "${baseRef(base)}|$type|$id"
+    val now = System.currentTimeMillis()
+    metadataCache[key]
+        ?.takeIf { now - it.createdAt < METADATA_CACHE_MS }
+        ?.let { return it.entry }
+
+    return requestLock("meta|$key").withLock {
+        val lockedNow = System.currentTimeMillis()
+        metadataCache[key]
+            ?.takeIf { lockedNow - it.createdAt < METADATA_CACHE_MS }
+            ?.let { return@withLock it.entry }
+        try {
+            val response = app.get(
+                "$base/meta/${encodePath(type)}/${encodePath(id)}.json",
+                timeout = 90L
+            ).parsedSafe<CatalogResponse>() ?: return@withLock null
+            val entry = response.meta
+                ?: response.metas?.firstOrNull { it.id == id }
+                ?: response.metas?.firstOrNull()
+                ?: return@withLock null
+            metadataCache[key] = MetadataCacheEntry(lockedNow, entry)
+            entry
+        } catch (_: Throwable) {
+            null
+        }
     }
 }
 
@@ -272,6 +392,8 @@ internal fun invalidateManifestCache() {
     manifestCache.clear()
     manifestTextCache.clear()
     homeCatalogCache.clear()
+    searchCatalogCache.clear()
+    metadataCache.clear()
 }
 
 internal fun parseManifestInput(raw: String): List<String> {
@@ -384,30 +506,86 @@ internal fun cleanText(value: String?): String? = value
     ?.trim()
     ?.takeIf { it.isNotBlank() }
 
+internal fun formatMetadataDescription(value: String?): String? {
+    val normalized = value
+        ?.replace("\r\n", "\n")
+        ?.replace('\r', '\n')
+        ?.replace(Regex("[ \\t]{2,}"), " ")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: return null
+
+    return normalized
+        .replace(Regex("(?i)[ \\t]+(?=Released\\s*:)"), "\n")
+        .replace(
+            Regex("(?i)(Released\\s*:\\s*(?:19|20)\\d{2}-\\d{2}-\\d{2})[ \\t]+"),
+            "\$1\n\n"
+        )
+        .replace(Regex("\n{3,}"), "\n\n")
+        .trim()
+}
+
+internal fun parseRuntimeMinutes(value: String?): Int? {
+    val text = cleanText(value)?.lowercase(Locale.ROOT) ?: return null
+    Regex("(\\d+)\\s*h(?:ours?)?(?:\\s*(\\d+)\\s*m)?").find(text)?.let { match ->
+        val hours = match.groupValues[1].toIntOrNull() ?: return@let
+        val minutes = match.groupValues.getOrNull(2)?.toIntOrNull() ?: 0
+        return hours * 60 + minutes
+    }
+    Regex("(\\d+)\\s*(?:m|min|mins|minutes)\\b").find(text)?.groupValues?.getOrNull(1)
+        ?.toIntOrNull()
+        ?.let { return it }
+    val clock = text.split(':').mapNotNull { it.trim().toIntOrNull() }
+    if (clock.size == 3) return clock[0] * 60 + clock[1]
+    if (clock.size == 2) return clock[0]
+    return text.toIntOrNull()
+}
+
 internal fun cleanStreamSource(name: String?): String {
     val cleaned = cleanText(name) ?: return "TPB"
     val withoutQuality = cleaned
         .replace(Regex("(?i)\\b(2160|1440|1080|720|576|540|480|360)p?\\b"), "")
         .replace(Regex("(?i)\\b(4k|uhd|fhd|hd)\\b"), "")
+        .replace(Regex("(?i)\\bunknown\\b"), "")
         .replace("🧲", "")
         .replace(Regex("\\s{2,}"), " ")
         .trim(' ', '•', '-', '|')
     return withoutQuality.ifBlank { "TPB" }.take(60)
 }
 
-internal fun cleanStreamName(name: String?, title: String?, filename: String?): String {
-    val n = cleanText(name)
-    val t = cleanText(title)
-    val f = cleanText(filename)
+internal fun cleanStreamName(
+    name: String?,
+    title: String?,
+    description: String?,
+    filename: String?,
+    videoSize: Long?
+): String {
+    val base = cleanStreamSource(name)
+    val details = listOfNotNull(title, description).joinToString(" ")
+    val textualSize = Regex(
+        "(?i)\\b\\d+(?:\\.\\d+)?\\s*(?:TiB|GiB|MiB|KiB|TB|GB|MB|KB)\\b"
+    ).find(details)?.value
+    val size = textualSize ?: videoSize
+        ?.takeIf { it > 0L }
+        ?.let(::formatByteCount)
+    val seeds = Regex("(?i)\\b[\\d,]+\\s+seeds?\\b").find(details)?.value
 
-    val chosen = when {
-        !n.isNullOrBlank() -> n
-        !t.isNullOrBlank() -> t
-        !f.isNullOrBlank() -> f.substringAfterLast('/')
-        else -> "TPB Stream"
-    }
+    return listOfNotNull(base, size, seeds)
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase(Locale.ROOT) }
+        .joinToString(" • ")
+        .ifBlank {
+            cleanText(filename)?.substringAfterLast('/') ?: "TPB Stream"
+        }
+        .take(140)
+}
 
-    return chosen.take(140)
+private fun formatByteCount(bytes: Long): String {
+    val gib = bytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
+    if (gib >= 1.0) return if (gib >= 10.0) "%.0f GB".format(Locale.US, gib) else "%.1f GB".format(Locale.US, gib)
+    val mib = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mib >= 10.0) "%.0f MB".format(Locale.US, mib) else "%.1f MB".format(Locale.US, mib)
 }
 
 internal fun inferQuality(vararg values: String?): Int {
