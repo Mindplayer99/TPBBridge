@@ -547,6 +547,25 @@ internal fun formatMetadataDescription(value: String?): String? {
         .trim()
 }
 
+/**
+ * TPB child titles sometimes carry Stremio-style Sxx:Exx decorations even
+ * when the parent is a creator/studio video pack rather than a television
+ * series. CloudStream already numbers selectable rows, so remove only those
+ * synthetic edge decorations and retain the actual video title.
+ */
+internal fun collectionVideoTitle(value: String?, index: Int): String {
+    val fallback = "Video $index"
+    var title = cleanText(value) ?: return fallback
+    val edgePatterns = listOf(
+        Regex("(?i)\\s*[-–—|:]?\\s*S\\d+\\s*[:._-]?\\s*E\\d+\\s*$"),
+        Regex("(?i)^\\s*S\\d+\\s*[:._-]?\\s*E\\d+\\s*[-–—|:]?\\s*"),
+        Regex("(?i)\\s*[-–—|:]?\\s*Season\\s*\\d+\\s*[:._-]?\\s*Episode\\s*\\d+\\s*$"),
+        Regex("(?i)^\\s*Season\\s*\\d+\\s*[:._-]?\\s*Episode\\s*\\d+\\s*[-–—|:]?\\s*")
+    )
+    edgePatterns.forEach { pattern -> title = title.replace(pattern, "").trim() }
+    return fixTitle(title.ifBlank { fallback })
+}
+
 internal fun parseRuntimeMinutes(value: String?): Int? {
     val text = cleanText(value)?.lowercase(Locale.ROOT) ?: return null
     Regex("(\\d+)\\s*h(?:ours?)?(?:\\s*(\\d+)\\s*m)?").find(text)?.let { match ->
