@@ -76,7 +76,8 @@ class TPBBridgePlugin : Plugin() {
                     searchGroups = searches,
                     combinedSearchEnabled = profile.parentSearch,
                     homeOrder = profile.homeOrder,
-                    disabledSources = profile.disabledSources
+                    disabledSources = profile.disabledSources,
+                    separateLiveCategories = profile.separateLiveCategories
                 )
             )
 
@@ -343,6 +344,17 @@ class TPBBridgePlugin : Plugin() {
         )
         root.addView(manageHint)
 
+        root.addView(section("Live catalogs"))
+        val separateLiveCategories = toggle(
+            "Separate live category rows",
+            seed.separateLiveCategories
+        )
+        root.addView(separateLiveCategories)
+        root.addView(helper(
+            "Off: one Stripchat row and one Chaturbate row. On: enabled region/category catalogs get their own rows. " +
+                "Ignored safely when this profile has no live catalogs."
+        ))
+
         root.addView(section("Search"))
         val parentSearch = toggle("Search through Home name", seed.parentSearch)
         root.addView(parentSearch)
@@ -424,6 +436,7 @@ class TPBBridgePlugin : Plugin() {
             val homeName = homeEdit.text.toString().trim().ifBlank { DEFAULT_HOME_NAME }
             val prefix = prefixEdit.text.toString()
             // Snapshot all UI-owned state before leaving the main thread.
+            val separateLiveCategoriesEnabled = separateLiveCategories.isChecked
             val parentSearchEnabled = parentSearch.isChecked
             val studioEnabled = studio.isChecked
             val performerEnabled = performer.isChecked
@@ -443,7 +456,7 @@ class TPBBridgePlugin : Plugin() {
                 try {
                     val discovered = discoverBridgeRoutes(bases)
                     val discoveredHome = try {
-                        discoverHomeSources(bases)
+                        discoverHomeSources(bases, separateLiveCategoriesEnabled)
                     } catch (_: Throwable) {
                         emptyList()
                     }
@@ -468,6 +481,7 @@ class TPBBridgePlugin : Plugin() {
                         homeSources = discoveredSources,
                         homeOrder = nextOrder,
                         disabledSources = nextDisabled,
+                        separateLiveCategories = separateLiveCategoriesEnabled,
                         parentSearch = parentSearchEnabled,
                         studioEnabled = studioEnabled,
                         performerEnabled = performerEnabled,

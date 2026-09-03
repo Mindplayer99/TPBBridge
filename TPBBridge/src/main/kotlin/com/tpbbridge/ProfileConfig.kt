@@ -26,6 +26,7 @@ internal data class BridgeProfile(
     val homeSources: List<String> = emptyList(),
     val homeOrder: List<String> = emptyList(),
     val disabledSources: List<String> = emptyList(),
+    val separateLiveCategories: Boolean = false,
     val parentSearch: Boolean = false,
     val studioEnabled: Boolean = false,
     val performerEnabled: Boolean = false,
@@ -89,6 +90,7 @@ private fun profilesToJson(profiles: List<BridgeProfile>): String {
             put("homeSources", JSONArray(saveHomeNameList(profile.homeSources)))
             put("homeOrder", JSONArray(saveHomeNameList(profile.homeOrder)))
             put("disabledSources", JSONArray(saveHomeNameList(profile.disabledSources)))
+            put("separateLiveCategories", profile.separateLiveCategories)
             put("parentSearch", profile.parentSearch)
             put("studioEnabled", profile.studioEnabled)
             put("performerEnabled", profile.performerEnabled)
@@ -121,6 +123,7 @@ private fun profilesFromJson(json: String): List<BridgeProfile> {
                         homeSources = loadHomeNameList(obj.optJSONArray("homeSources")?.toString().orEmpty()),
                         homeOrder = loadHomeNameList(obj.optJSONArray("homeOrder")?.toString().orEmpty()),
                         disabledSources = loadHomeNameList(obj.optJSONArray("disabledSources")?.toString().orEmpty()),
+                        separateLiveCategories = obj.optBoolean("separateLiveCategories", false),
                         parentSearch = obj.optBoolean("parentSearch", false),
                         studioEnabled = obj.optBoolean("studioEnabled", false),
                         performerEnabled = obj.optBoolean("performerEnabled", false),

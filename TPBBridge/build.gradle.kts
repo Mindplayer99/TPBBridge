@@ -1,8 +1,8 @@
-version = 13
+version = 14
 
 cloudstream {
     language = "en"
-    description = "TPB/Stremio bridge with independent profiles, live cams, compact P2P and MegaPack catalogs, per-profile Home/Search controls, direct/debrid and P2P streams"
+    description = "TPB/Stremio bridge with selectable MegaPack videos, exact-file P2P fallback, live-category layout controls, compact catalogs and debrid/direct streams"
     authors = listOf("Mindplayer99", "TPBBridge contributors")
     status = 3
     tvTypes = listOf("Others")
