@@ -109,7 +109,7 @@ internal class TPBHomeProvider(
 
         return newHomePageResponse(
             merged.values.map { row -> HomePageList(row.name, row.items, row.horizontal) },
-            false
+            merged.values.any { it.hasNext }
         )
     }
 
