@@ -66,7 +66,7 @@ internal fun discoverBridgeRoutes(bases: List<String>): DiscoveryBundle {
     val facets = mutableListOf<FacetRoute>()
 
     bases.forEach { base ->
-        val manifestText = httpGetText("$base/manifest.json")
+        val manifestText = fetchManifestText(base)
         val root = JSONObject(manifestText)
         val catalogs = root.optJSONArray("catalogs") ?: JSONArray()
 

@@ -2,6 +2,17 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v15: reduced manifest and repeat-Home latency
+
+v15 removes avoidable work when profiles contain many TPB/P2P catalogs:
+
+- **Save + refresh** now downloads each configured manifest once and shares that snapshot between Search/facet discovery, Home-source discovery and the immediately following Home load. Previously those paths could download the same manifest three times.
+- Successful Home catalog pages are cached in memory for two minutes. Returning to the TPBBridge Home provider during that window reuses the catalog results instead of refetching every enabled studio/performer/P2P row.
+- A manual **Save + refresh**, profile removal or full TPBBridge wipe invalidates all manifest and Home-page caches, so a deliberate refresh never keeps an old profile layout.
+- Failed catalog requests are not cached. A temporarily failing TPB row therefore gets another real attempt on the next Home load.
+
+CloudStream still asks a provider to finish its complete initial Home response before displaying it. A cold load of a large P2P profile must therefore wait for every enabled TPB catalog request—and effectively its slowest response—whereas a Stremio/Nuvio client can manage those addon catalogs independently. TPBBridge cannot remove that host-app API difference without dropping rows or changing catalogue semantics.
+
 ## v14: real MegaPack videos and exact-file P2P
 
 v14 fixes the two protocol mismatches that most affected MegaPack and raw torrent playback:
