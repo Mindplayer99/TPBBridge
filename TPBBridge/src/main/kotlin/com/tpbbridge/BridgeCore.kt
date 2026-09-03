@@ -31,18 +31,22 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainActivity.Companion.afterPluginsLoadedEvent
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.SeasonData
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.addDate
 import com.lagradost.cloudstream3.amap
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixTitle
+import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.newSubtitleFile
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -193,14 +197,59 @@ internal abstract class TPBBaseProvider(
             null
         } ?: fallback
 
+        val resolvedType = meta.type ?: type
+        val videos = meta.videos.orEmpty()
+            .filter { it.id.isNotBlank() }
+            .distinctBy { it.id }
+        val responseName = meta.name.ifBlank { fallback.name }
+
+        // Stremio represents a MegaPack (and any other multi-video item) as one
+        // meta object with child video ids. A movie response can expose only one
+        // Play button, so give CloudStream one selectable child per real video.
+        // TvType.Others deliberately avoids pretending the collection is a TV show.
+        if (videos.size > 1) {
+            val items = videos.mapIndexed { index, video ->
+                newEpisode(
+                    StreamLoadData(
+                        baseRef = baseRef(base),
+                        type = resolvedType,
+                        id = video.id
+                    )
+                ) {
+                    name = video.title?.takeIf { it.isNotBlank() } ?: "Video ${index + 1}"
+                    season = 1
+                    episode = index + 1
+                    posterUrl = video.thumbnail ?: video.poster
+                    description = video.overview ?: video.description
+                    addDate(video.released)
+                }
+            }
+
+            return newTvSeriesLoadResponse(
+                responseName,
+                url,
+                TvType.Others,
+                items
+            ) {
+                posterUrl = meta.poster ?: fallback.poster
+                backgroundPosterUrl = meta.background ?: fallback.background
+                plot = meta.description ?: fallback.description
+                year = meta.bestYear() ?: fallback.bestYear()
+                tags = meta.genre ?: meta.genres ?: fallback.genre ?: fallback.genres
+                seasonNames = listOf(SeasonData(season = 1, name = "Videos", displaySeason = null))
+            }
+        }
+
+        // A single advertised child id is the canonical stream id. Falling back
+        // to the parent id keeps ordinary movie/tube metadata fully compatible.
         val data = StreamLoadData(
             baseRef = baseRef(base),
-            type = meta.type ?: type,
-            id = meta.id.ifBlank { id }
+            type = resolvedType,
+            id = videos.singleOrNull()?.id ?: meta.id.ifBlank { id }
         ).toJson()
 
         return newMovieLoadResponse(
-            meta.name.ifBlank { fallback.name },
+            responseName,
             url,
             TvType.Others,
             data
@@ -234,6 +283,7 @@ internal abstract class TPBBaseProvider(
         var emitted = false
         response.streams
             .distinctBy { it.stableKey() }
+            .orderedForPlayback()
             .forEach { stream ->
                 if (stream.emit(subtitleCallback, callback)) emitted = true
             }
@@ -288,7 +338,12 @@ internal data class Catalog(
     fun isHomeCatalog(): Boolean =
         isTpbHomeCatalogDescriptor(name, id, hasRequiredExtra())
 
-    suspend fun toHomeRow(base: String, provider: TPBBaseProvider, page: Int): HomeRow {
+    suspend fun toHomeRow(
+        base: String,
+        provider: TPBBaseProvider,
+        page: Int,
+        sourceName: String = deriveSourceName(name, id)
+    ): HomeRow {
         val skip = ((page - 1).coerceAtLeast(0) * SEARCH_PAGE_SIZE)
         val rawEntries = allTypes().amap { t ->
             try {
@@ -303,12 +358,12 @@ internal data class Catalog(
         }.flatten().filter { it.id.isNotBlank() && it.name.isNotBlank() }
 
         val entries = rawEntries.distinctBy { "${it.type}|${it.id}" }
-        val items = entries.mapNotNull { it.toSearchResponse(provider, base, deriveSourceName(name, id)) }
+        val items = entries.mapNotNull { it.toSearchResponse(provider, base, sourceName) }
         val landscapeCount = entries.count { it.posterShape.equals("landscape", true) }
         val horizontal = entries.isNotEmpty() && landscapeCount * 2 >= entries.size
 
         return HomeRow(
-            name = deriveSourceName(name, id).ifBlank { name ?: id },
+            name = sourceName.ifBlank { name ?: id },
             items = items,
             horizontal = horizontal
         )
@@ -338,7 +393,8 @@ internal data class CatalogEntry(
     @JsonProperty("genres") val genres: List<String>? = null,
     @JsonProperty("year") val yearString: String? = null,
     @JsonProperty("releaseInfo") val releaseInfo: String? = null,
-    @JsonProperty("released") val released: String? = null
+    @JsonProperty("released") val released: String? = null,
+    @JsonProperty("videos") val videos: List<CatalogVideo>? = null
 ) {
     fun toSearchResponse(provider: TPBBaseProvider, baseUrl: String, source: String): SearchResponse? {
         if (name.isBlank() || id.isBlank()) return null
@@ -360,6 +416,19 @@ internal data class CatalogEntry(
             .firstOrNull()
     }
 }
+
+/** Child media advertised by Stremio metadata (used by TPB MegaPacks). */
+internal data class CatalogVideo(
+    @JsonProperty("id") val id: String = "",
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("season") val season: Int? = null,
+    @JsonProperty("episode") val episode: Int? = null,
+    @JsonProperty("thumbnail") val thumbnail: String? = null,
+    @JsonProperty("poster") val poster: String? = null,
+    @JsonProperty("overview") val overview: String? = null,
+    @JsonProperty("description") val description: String? = null,
+    @JsonProperty("released") val released: String? = null
+)
 
 /**
  * New payloads use baseRef so private manifest/config URLs do not get copied into item URLs/history.
@@ -461,7 +530,12 @@ internal data class Stream(
 
         // TPB returns infoHash + sources for P2P fallback when debrid is unavailable/hidden.
         if (!infoHash.isNullOrBlank()) {
-            val magnet = buildMagnet(infoHash, behaviorHints?.filename ?: title, sources)
+            val magnet = buildMagnet(
+                infoHash = infoHash,
+                displayName = behaviorHints?.filename ?: title,
+                sources = sources,
+                fileIndex = fileIdx
+            )
             callback(
                 newExtractorLink(
                     source = cleanStreamSource(name).let { if (it == "TPB") "TPB P2P" else it },
@@ -497,6 +571,33 @@ internal data class Stream(
             subtitleCallback(newSubtitleFile(label, subUrl))
         }
     }
+}
+
+/**
+ * Keep resolved/cache-backed media above P2P fallback links, then prefer the
+ * highest advertised quality inside each class. Indexed tie-breaking preserves
+ * TPB's original order for equivalent mirrors.
+ */
+internal fun List<Stream>.orderedForPlayback(): List<Stream> = withIndex()
+    .sortedWith(
+        compareBy<IndexedValue<Stream>> { it.value.playbackClass() }
+            .thenByDescending {
+                inferQuality(
+                    it.value.name,
+                    it.value.title,
+                    it.value.description,
+                    it.value.behaviorHints?.filename
+                )
+            }
+            .thenBy { it.index }
+    )
+    .map { it.value }
+
+private fun Stream.playbackClass(): Int = when {
+    !url.isNullOrBlank() -> 0
+    !ytId.isNullOrBlank() || !externalUrl.isNullOrBlank() -> 1
+    !infoHash.isNullOrBlank() -> 2
+    else -> 3
 }
 
 internal data class StreamsResponse(
