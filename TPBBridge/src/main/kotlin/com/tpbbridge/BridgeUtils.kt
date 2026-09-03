@@ -74,7 +74,7 @@ internal fun discoverSearchRoutes(bases: List<String>): List<SearchRouteGroup> {
     val candidates = mutableListOf<Candidate>()
 
     bases.forEach { base ->
-        val manifestText = httpGetText("$base/manifest.json")
+        val manifestText = fetchManifestText(base)
         val root = JSONObject(manifestText)
         val catalogs = root.optJSONArray("catalogs") ?: JSONArray()
 
@@ -200,7 +200,30 @@ internal fun jsonCatalogSearchRequired(c: JSONObject): Boolean {
 }
 
 internal data class ManifestCacheEntry(val createdAt: Long, val manifest: Manifest)
+internal data class ManifestTextCacheEntry(val createdAt: Long, val text: String)
+internal data class HomeCatalogCacheEntry(val createdAt: Long, val entries: List<CatalogEntry>)
 internal val manifestCache = ConcurrentHashMap<String, ManifestCacheEntry>()
+internal val manifestTextCache = ConcurrentHashMap<String, ManifestTextCacheEntry>()
+internal val homeCatalogCache = ConcurrentHashMap<String, HomeCatalogCacheEntry>()
+
+/**
+ * Settings discovery is synchronous because it runs on TPBBridge's background
+ * refresh thread. Share one downloaded document across route discovery, Home
+ * discovery and the immediately following typed runtime manifest request.
+ */
+internal fun fetchManifestText(base: String): String {
+    val now = System.currentTimeMillis()
+    manifestTextCache[base]
+        ?.takeIf { now - it.createdAt < MANIFEST_CACHE_MS }
+        ?.let { return it.text }
+
+    val text = httpGetText("$base/manifest.json")
+    manifestTextCache[base] = ManifestTextCacheEntry(now, text)
+    runCatching { parseJson<Manifest>(text) }
+        .getOrNull()
+        ?.let { manifestCache[base] = ManifestCacheEntry(now, it) }
+    return text
+}
 
 internal suspend fun fetchManifest(base: String): Manifest? {
     val now = System.currentTimeMillis()
@@ -215,7 +238,41 @@ internal suspend fun fetchManifest(base: String): Manifest? {
     }
 }
 
-internal fun invalidateManifestCache() = manifestCache.clear()
+/** Successful Home pages are briefly reused when CloudStream reopens Home. */
+internal suspend fun fetchHomeCatalogEntries(
+    base: String,
+    type: String,
+    catalogId: String,
+    page: Int,
+    supportsSkip: Boolean
+): List<CatalogEntry>? {
+    val safePage = page.coerceAtLeast(1)
+    val skip = (safePage - 1) * SEARCH_PAGE_SIZE
+    val key = "${baseRef(base)}|$type|$catalogId|$safePage"
+    val now = System.currentTimeMillis()
+    homeCatalogCache[key]
+        ?.takeIf { now - it.createdAt < HOME_CATALOG_CACHE_MS }
+        ?.let { return it.entries }
+
+    return try {
+        val suffix = if (safePage > 1 && supportsSkip) "/skip=$skip" else ""
+        val response = app.get(
+            "$base/catalog/${encodePath(type)}/${encodePath(catalogId)}$suffix.json",
+            timeout = 90L
+        ).parsedSafe<CatalogResponse>() ?: return null
+        response.metas.orEmpty().also { entries ->
+            homeCatalogCache[key] = HomeCatalogCacheEntry(now, entries)
+        }
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+internal fun invalidateManifestCache() {
+    manifestCache.clear()
+    manifestTextCache.clear()
+    homeCatalogCache.clear()
+}
 
 internal fun parseManifestInput(raw: String): List<String> {
     return raw
