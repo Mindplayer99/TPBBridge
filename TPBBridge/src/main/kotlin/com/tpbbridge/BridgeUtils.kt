@@ -366,10 +366,16 @@ internal fun inferQuality(vararg values: String?): Int {
     return getQualityFromName(qualityName)
 }
 
-internal fun buildMagnet(infoHash: String, displayName: String?, sources: List<String>): String {
+internal fun buildMagnet(
+    infoHash: String,
+    displayName: String?,
+    sources: List<String>,
+    fileIndex: Int? = null
+): String {
     val hash = infoHash.trim()
     val parts = mutableListOf("xt=urn:btih:${encodeQuery(hash)}")
     cleanText(displayName)?.let { parts += "dn=${encodeQuery(it)}" }
+    fileIndex?.takeIf { it >= 0 }?.let { parts += "index=$it" }
 
     sources.asSequence()
         .mapNotNull { source ->
