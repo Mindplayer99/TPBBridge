@@ -54,8 +54,8 @@ import com.lagradost.cloudstream3.utils.SubtitleHelper
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CompletableDeferred
+import kotlin.coroutines.cancellation.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -211,10 +211,28 @@ internal val manifestTextCache = ConcurrentHashMap<String, ManifestTextCacheEntr
 internal val homeCatalogCache = ConcurrentHashMap<String, HomeCatalogCacheEntry>()
 internal val searchCatalogCache = ConcurrentHashMap<String, SearchCatalogCacheEntry>()
 internal val metadataCache = ConcurrentHashMap<String, MetadataCacheEntry>()
-private val requestLocks = Array(32) { Mutex() }
+private val manifestInFlight = ConcurrentHashMap<String, CompletableDeferred<Manifest?>>()
+private val catalogInFlight = ConcurrentHashMap<String, CompletableDeferred<List<CatalogEntry>?>>()
+private val metadataInFlight = ConcurrentHashMap<String, CompletableDeferred<CatalogEntry?>>()
 
-private fun requestLock(key: String): Mutex =
-    requestLocks[(key.hashCode() and Int.MAX_VALUE) % requestLocks.size]
+private suspend fun <T> coalesceRequest(
+    inFlight: ConcurrentHashMap<String, CompletableDeferred<T>>,
+    key: String,
+    block: suspend () -> T
+): T {
+    val mine = CompletableDeferred<T>()
+    val existing = inFlight.putIfAbsent(key, mine)
+    if (existing != null) return existing.await()
+
+    return try {
+        block().also { mine.complete(it) }
+    } catch (t: Throwable) {
+        mine.completeExceptionally(t)
+        throw t
+    } finally {
+        inFlight.remove(key, mine)
+    }
+}
 
 private fun homeCatalogPageKey(base: String, type: String, catalogId: String, page: Int): String =
     "${baseRef(base)}|$type|$catalogId|${page.coerceAtLeast(1)}"
@@ -250,16 +268,17 @@ internal suspend fun fetchManifest(base: String): Manifest? {
     val now = System.currentTimeMillis()
     manifestCache[base]?.takeIf { now - it.createdAt < MANIFEST_CACHE_MS }?.let { return it.manifest }
 
-    return requestLock("manifest|$base").withLock {
+    return coalesceRequest(manifestInFlight, base) {
         val lockedNow = System.currentTimeMillis()
         manifestCache[base]
             ?.takeIf { lockedNow - it.createdAt < MANIFEST_CACHE_MS }
-            ?.let { return@withLock it.manifest }
+            ?.let { return@coalesceRequest it.manifest }
         try {
             app.get("$base/manifest.json", timeout = 60L).parsedSafe<Manifest>()?.also {
                 manifestCache[base] = ManifestCacheEntry(lockedNow, it)
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             null
         }
     }
@@ -282,11 +301,11 @@ internal suspend fun fetchHomeCatalogEntries(
         ?.takeIf { now - it.createdAt < cacheTtlMs }
         ?.let { return it.entries }
 
-    return requestLock("home|$key").withLock {
+    return coalesceRequest(catalogInFlight, "home|$key") {
         val lockedNow = System.currentTimeMillis()
         homeCatalogCache[key]
             ?.takeIf { lockedNow - it.createdAt < cacheTtlMs }
-            ?.let { return@withLock it.entries }
+            ?.let { return@coalesceRequest it.entries }
         try {
             val priorCount = (1 until safePage).sumOf { previousPage ->
                 homeCatalogCache[homeCatalogPageKey(base, type, catalogId, previousPage)]
@@ -298,11 +317,12 @@ internal suspend fun fetchHomeCatalogEntries(
             val response = app.get(
                 "$base/catalog/${encodePath(type)}/${encodePath(catalogId)}$suffix.json",
                 timeout = 90L
-            ).parsedSafe<CatalogResponse>() ?: return@withLock null
+            ).parsedSafe<CatalogResponse>() ?: return@coalesceRequest null
             response.metas.orEmpty().also { entries ->
                 homeCatalogCache[key] = HomeCatalogCacheEntry(lockedNow, entries)
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             null
         }
     }
@@ -329,11 +349,11 @@ internal suspend fun fetchSearchCatalogEntries(
         ?.takeIf { now - it.createdAt < SEARCH_CATALOG_CACHE_MS }
         ?.let { return it.entries }
 
-    return requestLock("search|$key").withLock {
+    return coalesceRequest(catalogInFlight, "search|$key") {
         val lockedNow = System.currentTimeMillis()
         searchCatalogCache[key]
             ?.takeIf { lockedNow - it.createdAt < SEARCH_CATALOG_CACHE_MS }
-            ?.let { return@withLock it.entries }
+            ?.let { return@coalesceRequest it.entries }
         try {
             val priorCount = (1 until safePage).sumOf { previousPage ->
                 searchCatalogCache[
@@ -344,11 +364,12 @@ internal suspend fun fetchSearchCatalogEntries(
             val response = app.get(
                 "$base/catalog/${encodePath(type)}/${encodePath(catalogId)}/$pagedExtras.json",
                 timeout = 90L
-            ).parsedSafe<CatalogResponse>() ?: return@withLock null
+            ).parsedSafe<CatalogResponse>() ?: return@coalesceRequest null
             response.metas.orEmpty().also { entries ->
                 searchCatalogCache[key] = SearchCatalogCacheEntry(lockedNow, entries)
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             null
         }
     }
@@ -366,23 +387,24 @@ internal suspend fun fetchMetadataEntry(
         ?.takeIf { now - it.createdAt < METADATA_CACHE_MS }
         ?.let { return it.entry }
 
-    return requestLock("meta|$key").withLock {
+    return coalesceRequest(metadataInFlight, key) {
         val lockedNow = System.currentTimeMillis()
         metadataCache[key]
             ?.takeIf { lockedNow - it.createdAt < METADATA_CACHE_MS }
-            ?.let { return@withLock it.entry }
+            ?.let { return@coalesceRequest it.entry }
         try {
             val response = app.get(
                 "$base/meta/${encodePath(type)}/${encodePath(id)}.json",
                 timeout = 90L
-            ).parsedSafe<CatalogResponse>() ?: return@withLock null
+            ).parsedSafe<CatalogResponse>() ?: return@coalesceRequest null
             val entry = response.meta
                 ?: response.metas?.firstOrNull { it.id == id }
                 ?: response.metas?.firstOrNull()
-                ?: return@withLock null
+                ?: return@coalesceRequest null
             metadataCache[key] = MetadataCacheEntry(lockedNow, entry)
             entry
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             null
         }
     }
