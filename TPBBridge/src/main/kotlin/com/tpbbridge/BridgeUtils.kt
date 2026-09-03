@@ -55,8 +55,7 @@ import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlin.coroutines.cancellation.CancellationException
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.Continuation
 import kotlin.coroutines.suspendCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
@@ -66,7 +65,6 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 
 internal fun discoverSearchRoutes(bases: List<String>): List<SearchRouteGroup> {
@@ -214,30 +212,46 @@ internal val manifestTextCache = ConcurrentHashMap<String, ManifestTextCacheEntr
 internal val homeCatalogCache = ConcurrentHashMap<String, HomeCatalogCacheEntry>()
 internal val searchCatalogCache = ConcurrentHashMap<String, SearchCatalogCacheEntry>()
 internal val metadataCache = ConcurrentHashMap<String, MetadataCacheEntry>()
-private val manifestInFlight = ConcurrentHashMap<String, CompletableFuture<Manifest?>>()
-private val catalogInFlight = ConcurrentHashMap<String, CompletableFuture<List<CatalogEntry>?>>()
-private val metadataInFlight = ConcurrentHashMap<String, CompletableFuture<CatalogEntry?>>()
+private class InFlightRequest<T> {
+    private val waiters = mutableListOf<Continuation<T>>()
+    private var outcome: Result<T>? = null
 
-private suspend fun <T> CompletableFuture<T>.awaitResult(): T = suspendCoroutine { continuation ->
-    whenComplete { result, error ->
-        if (error == null) continuation.resume(result)
-        else continuation.resumeWithException(error.cause ?: error)
+    suspend fun await(): T = suspendCoroutine { continuation ->
+        val completed = synchronized(this) {
+            outcome.also { current ->
+                if (current == null) waiters += continuation
+            }
+        }
+        if (completed != null) continuation.resumeWith(completed)
+    }
+
+    fun complete(result: Result<T>) {
+        val pending = synchronized(this) {
+            if (outcome != null) return
+            outcome = result
+            waiters.toList().also { waiters.clear() }
+        }
+        pending.forEach { it.resumeWith(result) }
     }
 }
 
+private val manifestInFlight = ConcurrentHashMap<String, InFlightRequest<Manifest?>>()
+private val catalogInFlight = ConcurrentHashMap<String, InFlightRequest<List<CatalogEntry>?>>()
+private val metadataInFlight = ConcurrentHashMap<String, InFlightRequest<CatalogEntry?>>()
+
 private suspend fun <T> coalesceRequest(
-    inFlight: ConcurrentHashMap<String, CompletableFuture<T>>,
+    inFlight: ConcurrentHashMap<String, InFlightRequest<T>>,
     key: String,
     block: suspend () -> T
 ): T {
-    val mine = CompletableFuture<T>()
+    val mine = InFlightRequest<T>()
     val existing = inFlight.putIfAbsent(key, mine)
-    if (existing != null) return existing.awaitResult()
+    if (existing != null) return existing.await()
 
     return try {
-        block().also { mine.complete(it) }
+        block().also { mine.complete(Result.success(it)) }
     } catch (t: Throwable) {
-        mine.completeExceptionally(t)
+        mine.complete(Result.failure(t))
         throw t
     } finally {
         inFlight.remove(key, mine)
