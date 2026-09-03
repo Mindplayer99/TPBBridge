@@ -45,13 +45,7 @@ internal fun isTpbHomeCatalogDescriptor(
     // catalogs. Current Stripchat uses sc_*; current/newer Chaturbate builds
     // use cb_*/chaturbate_* style ids. Names are checked as a forward-compatible
     // fallback without making every generic catalog a Home row.
-    if (
-        lowerId.startsWith("sc_") ||
-        lowerId.startsWith("cb_") ||
-        lowerId.startsWith("chaturbate_") ||
-        label.contains("stripchat") ||
-        label.contains("chaturbate")
-    ) return true
+    if (isTpbLiveCatalogDescriptor(name, cleanId)) return true
 
     // Compact TPB P2P catalogs collapse quality/sort variants into one
     // standalone studio/performer catalog. Their ids do not need a sort suffix.
@@ -89,6 +83,66 @@ internal fun isTpbHomeCatalogDescriptor(
     }
 
     return false
+}
+
+/** True only for the TPB live-cam catalog families the bridge understands. */
+internal fun isTpbLiveCatalogDescriptor(name: String?, id: String): Boolean {
+    val lowerId = id.trim().lowercase(Locale.ROOT)
+    val label = "${name.orEmpty()} $lowerId".lowercase(Locale.ROOT)
+    return lowerId.startsWith("sc_") ||
+        lowerId.startsWith("cb_") ||
+        lowerId.startsWith("chaturbate_") ||
+        label.contains("stripchat") ||
+        label.contains("chaturbate")
+}
+
+/**
+ * Live catalogs can be rendered as one provider row or as their real upstream
+ * category rows. Ordinary tube/P2P source naming is deliberately untouched.
+ */
+internal fun homeCatalogSourceName(
+    name: String?,
+    id: String,
+    separateLiveCategories: Boolean
+): String {
+    if (!isTpbLiveCatalogDescriptor(name, id)) return deriveSourceName(name, id)
+
+    val provider = when {
+        id.trim().lowercase(Locale.ROOT).startsWith("sc_") ||
+            name.orEmpty().contains("stripchat", true) -> "Stripchat"
+        else -> "Chaturbate"
+    }
+    if (!separateLiveCategories) return provider
+
+    val rawName = name?.trim().orEmpty()
+    val namedCategory = rawName
+        .replace("·", "•")
+        .replace("—", "•")
+        .replace(Regex("\\s+-\\s+"), " • ")
+        .replace(Regex("\\s*•\\s*"), " • ")
+        .trim()
+    if (namedCategory.isNotBlank() && !namedCategory.equals(provider, true)) {
+        return if (namedCategory.contains(provider, true)) {
+            namedCategory
+        } else {
+            "$provider • $namedCategory"
+        }
+    }
+
+    val lowerId = id.trim().lowercase(Locale.ROOT)
+    val suffix = when {
+        lowerId.startsWith("chaturbate_") -> lowerId.removePrefix("chaturbate_")
+        lowerId.startsWith("cb_") -> lowerId.removePrefix("cb_")
+        lowerId.startsWith("sc_") -> lowerId.removePrefix("sc_")
+        else -> ""
+    }
+    val category = suffix
+        .split(Regex("[_-]+"))
+        .filter { it.isNotBlank() && it !in setOf("live", "catalog", "recent") }
+        .joinToString(" ") { token ->
+            token.replaceFirstChar { char -> char.uppercaseChar() }
+        }
+    return if (category.isBlank()) provider else "$provider • $category"
 }
 
 private fun isKnownTpbP2pCatalog(lowerId: String): Boolean =
