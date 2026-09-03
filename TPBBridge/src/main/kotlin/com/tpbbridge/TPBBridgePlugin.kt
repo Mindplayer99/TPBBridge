@@ -149,6 +149,7 @@ class TPBBridgePlugin : Plugin() {
         initialDisabledRefs: List<String>,
         onDone: (List<String>) -> Unit
     ) {
+        fun dp(v: Int): Int = (v * activity.resources.displayMetrics.density).toInt()
         val disabled = initialDisabledRefs.toMutableSet()
         val labels = bases.mapIndexed { index, base ->
             val host = runCatching { android.net.Uri.parse(base).host }
@@ -156,16 +157,56 @@ class TPBBridgePlugin : Plugin() {
                 ?.takeIf { it.isNotBlank() }
                 ?: "configured URL"
             "Manifest ${index + 1} • $host"
-        }.toTypedArray()
-        val checked = bases.map { baseRef(it) !in disabled }.toBooleanArray()
+        }
+
+        val root = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(12))
+        }
+        val summary = TextView(activity).apply {
+            textSize = 14f
+            setPadding(0, 0, 0, dp(8))
+        }
+        root.addView(summary)
+
+        fun updateSummary() {
+            val onCount = bases.count { baseRef(it) !in disabled }
+            summary.text = "$onCount ON • ${bases.size - onCount} OFF\nON loads the manifest. OFF keeps its URL saved but makes no requests."
+        }
+
+        labels.forEachIndexed { index, label ->
+            val ref = baseRef(bases[index])
+            val manifestSwitch = Switch(activity).apply {
+                textSize = 15f
+                isChecked = ref !in disabled
+                setPadding(0, dp(6), 0, dp(6))
+
+                fun updateLabel() {
+                    text = "$label\n${if (isChecked) "ON • active after Save + refresh" else "OFF • saved, no requests"}"
+                }
+
+                updateLabel()
+                setOnCheckedChangeListener { _, enabled ->
+                    if (enabled) disabled.remove(ref) else disabled.add(ref)
+                    updateLabel()
+                    updateSummary()
+                }
+            }
+            root.addView(
+                manifestSwitch,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        updateSummary()
+
+        val scroll = ScrollView(activity).apply { addView(root) }
 
         AlertDialog.Builder(activity)
-            .setTitle("Enabled manifests")
-            .setMessage("Off stops every Home, Search, metadata and stream request for that manifest. Its URL remains saved.")
-            .setMultiChoiceItems(labels, checked) { _, which, enabled ->
-                val ref = baseRef(bases[which])
-                if (enabled) disabled.remove(ref) else disabled.add(ref)
-            }
+            .setTitle("Manifest ON/OFF switches")
+            .setView(scroll)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Done") { _, _ ->
                 onDone(bases.map(::baseRef).filter { it in disabled })
@@ -334,6 +375,13 @@ class TPBBridgePlugin : Plugin() {
         var workingDisabled = seed.disabledSources
         var workingDisabledManifestRefs = seed.disabledManifestRefs
 
+        fun manifestSwitchLabel(bases: List<String>, disabledRefs: List<String>): String {
+            if (bases.isEmpty()) return "Manifest switches • add URL(s) first"
+            val disabledSet = disabledRefs.toSet()
+            val onCount = bases.count { baseRef(it) !in disabledSet }
+            return "Manifest switches • $onCount ON • ${bases.size - onCount} OFF"
+        }
+
         val root = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(6), dp(18), dp(18))
@@ -353,11 +401,11 @@ class TPBBridgePlugin : Plugin() {
         root.addView(helper("Manifest URLs can contain private API keys. Keep them private."))
 
         val manageManifests = Button(activity).apply {
-            text = "Enable or disable manifests"
+            text = manifestSwitchLabel(seed.allBases, workingDisabledManifestRefs)
             isAllCaps = false
         }
         root.addView(manageManifests)
-        root.addView(helper("Disabled manifests stay saved and can be switched back on without pasting the URL again."))
+        root.addView(helper("Open to see an explicit ON/OFF switch for every URL. OFF manifests remain saved."))
 
         root.addView(label("Home name"))
         val homeEdit = EditText(activity).apply {
@@ -434,6 +482,7 @@ class TPBBridgePlugin : Plugin() {
             ) { disabled ->
                 workingDisabledManifestRefs = disabled
                 val active = savedBases.count { baseRef(it) !in disabled.toSet() }
+                manageManifests.text = manifestSwitchLabel(savedBases, disabled)
                 status.text = "$active/${savedBases.size} manifests enabled • Save + refresh to apply"
             }
         }
