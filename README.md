@@ -2,6 +2,12 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v17: MegaPack episode navigation and clear manifest switches
+
+v17 is a focused correction to v16. MegaPacks again use CloudStream's previous **Season 1 / Episode** list, with one playable episode per real TPB child video. The v16 presentation improvements remain: synthetic `Sxx:Exx` text is removed from child titles, descriptions are formatted into readable lines, parent tags/cast/runtime/rating/logo metadata is kept when TPB supplies it, and every episode still resolves its exact child stream id.
+
+Manifest management now shows a real Android switch for every saved URL. Each row says **ON • active after Save + refresh** or **OFF • saved, no requests**, the dialog shows live ON/OFF totals, and the profile-editor button also displays the current counts. Turning a manifest off still preserves its URL and state; no manifest change is applied until **Save + refresh** succeeds.
+
 ## v16: complete catalogue paging and lossless compact streams
 
 v16 addresses the concrete Nuvio-versus-CloudStream differences visible with large TPB P2P/studio catalogs:
@@ -81,7 +87,7 @@ Existing v10 installations are migrated automatically into one v11+ profile with
 3. Existing v10 users will see their old setup as one profile automatically.
 4. Tap a profile to configure it, or tap **+ Add profile**.
 5. Add one or more manifest URLs, one URL per line.
-6. Use **Enable or disable manifests** when a saved manifest should be paused without deleting its URL.
+6. Open **Manifest switches** and set each saved URL explicitly **ON** or **OFF**. OFF pauses it without deleting its URL.
 7. Choose that profile's **Home name** and optional **Search prefix**.
 8. Optionally enable **Search through Home name** and/or Studio, Performer and Tag searches.
 9. Choose whether live regions/categories should be combined or shown as separate rows for this profile.
