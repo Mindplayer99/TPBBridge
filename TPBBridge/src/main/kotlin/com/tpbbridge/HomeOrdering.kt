@@ -341,7 +341,10 @@ internal class TPBOrderedHomeProvider(
         }
 
         val ordered = orderHomeRows(merged.values, homeOrder)
-        val hasNext = usesIndependentRows && ordered.any { it.hasNext }
+        // Older saved profiles may not have the per-row catalog snapshot yet.
+        // Keep their combined Home route pageable immediately after upgrading;
+        // the next Save + refresh upgrades them to independent row expansion.
+        val hasNext = ordered.any { it.hasNext }
         return newHomePageResponse(
             ordered.map { HomePageList(it.name, it.items, it.horizontal) },
             hasNext
