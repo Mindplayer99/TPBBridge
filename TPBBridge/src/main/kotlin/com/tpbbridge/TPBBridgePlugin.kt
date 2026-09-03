@@ -39,6 +39,7 @@ internal const val DEFAULT_HOME_NAME = "TPB Tubes"
 internal const val DEFAULT_SEARCH_PREFIX = ""
 internal const val SAFE_MAIN_URL = "https://tpbbridge.invalid"
 internal const val MANIFEST_CACHE_MS = 5 * 60 * 1000L
+internal const val HOME_CATALOG_CACHE_MS = 2 * 60 * 1000L
 internal const val SEARCH_PAGE_SIZE = 20
 
 @CloudstreamPlugin
@@ -454,6 +455,9 @@ class TPBBridgePlugin : Plugin() {
 
             Thread {
                 try {
+                    // A manual refresh must start from one fresh snapshot. The
+                    // discovery helpers then share it with each other and Home.
+                    invalidateManifestCache()
                     val discovered = discoverBridgeRoutes(bases)
                     val discoveredHome = try {
                         discoverHomeSources(bases, separateLiveCategoriesEnabled)
@@ -514,7 +518,6 @@ class TPBBridgePlugin : Plugin() {
                         val oldNames = current?.let(::providerNamesForProfile).orEmpty()
                         val newNames = providerNamesForProfile(candidate)
                         removeCloudStreamSelections(oldNames - newNames)
-                        invalidateManifestCache()
                         onApplied(updated)
                         Toast.makeText(activity, "${candidate.homeName} refreshed.", Toast.LENGTH_SHORT).show()
                         editorDialog.dismiss()
