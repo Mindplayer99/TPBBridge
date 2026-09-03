@@ -12,7 +12,6 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.amap
-import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newSearchResponseList
 import org.json.JSONArray
@@ -322,25 +321,20 @@ internal class TPBUnifiedHomeProvider(
         val usable = if (page == 1) namedRoutes else namedRoutes.filter { it.route.supportsSkip }
         if (usable.isEmpty()) return emptyList<SearchResponse>() to false
 
-        val encoded = encodePath(query)
-        val skip = (page - 1) * SEARCH_PAGE_SIZE
+        val encoded = encodePath(query.trim())
         val entries = usable.amap { named ->
             val route = named.route
-            try {
-                val extras = buildString {
-                    append("search=").append(encoded)
-                    if (page > 1 && route.supportsSkip) append("&skip=").append(skip)
-                }
-                app.get(
-                    "${route.baseUrl}/catalog/${encodePath(route.type)}/${encodePath(route.catalogId)}/$extras.json",
-                    timeout = 90L
-                ).parsedSafe<CatalogResponse>()
-                    ?.metas.orEmpty()
-                    .filter { it.id.isNotBlank() && it.name.isNotBlank() }
-                    .map { Triple(named.source, route.baseUrl, it) }
-            } catch (_: Throwable) {
-                emptyList()
-            }
+            val extras = "search=$encoded"
+            fetchSearchCatalogEntries(
+                route.baseUrl,
+                route.type,
+                route.catalogId,
+                extras,
+                page,
+                route.supportsSkip
+            ).orEmpty()
+                .filter { it.id.isNotBlank() && it.name.isNotBlank() }
+                .map { Triple(named.source, route.baseUrl, it.withFallbackType(route.type)) }
         }.flatten()
 
         val deduped = entries.distinctBy { (_, base, entry) ->
@@ -408,24 +402,19 @@ internal class TPBFacetProvider(
 
         if (requests.isEmpty()) return emptyList<SearchResponse>() to false
 
-        val skip = (page - 1) * SEARCH_PAGE_SIZE
         val entries = requests.amap { request ->
             val route = request.route
-            try {
-                val extras = buildString {
-                    append("genre=").append(encodePath(request.option))
-                    if (page > 1 && route.supportsSkip) append("&skip=").append(skip)
-                }
-                app.get(
-                    "${route.baseUrl}/catalog/${encodePath(route.type)}/${encodePath(route.catalogId)}/$extras.json",
-                    timeout = 90L
-                ).parsedSafe<CatalogResponse>()
-                    ?.metas.orEmpty()
-                    .filter { it.id.isNotBlank() && it.name.isNotBlank() }
-                    .map { Triple(route, request.option, it) }
-            } catch (_: Throwable) {
-                emptyList()
-            }
+            val extras = "genre=${encodePath(request.option)}"
+            fetchSearchCatalogEntries(
+                route.baseUrl,
+                route.type,
+                route.catalogId,
+                extras,
+                page,
+                route.supportsSkip
+            ).orEmpty()
+                .filter { it.id.isNotBlank() && it.name.isNotBlank() }
+                .map { Triple(route, request.option, it.withFallbackType(route.type)) }
         }.flatten()
 
         val deduped = entries.distinctBy { (route, _, entry) ->
