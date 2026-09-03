@@ -40,6 +40,9 @@ internal const val DEFAULT_SEARCH_PREFIX = ""
 internal const val SAFE_MAIN_URL = "https://tpbbridge.invalid"
 internal const val MANIFEST_CACHE_MS = 5 * 60 * 1000L
 internal const val HOME_CATALOG_CACHE_MS = 2 * 60 * 1000L
+internal const val LIVE_HOME_CATALOG_CACHE_MS = 20 * 1000L
+internal const val SEARCH_CATALOG_CACHE_MS = 2 * 60 * 1000L
+internal const val METADATA_CACHE_MS = 5 * 60 * 1000L
 internal const val SEARCH_PAGE_SIZE = 20
 
 @CloudstreamPlugin
@@ -76,6 +79,7 @@ class TPBBridgePlugin : Plugin() {
                     manifestBases = bases,
                     searchGroups = searches,
                     combinedSearchEnabled = profile.parentSearch,
+                    catalogSources = profile.catalogSources,
                     homeOrder = profile.homeOrder,
                     disabledSources = profile.disabledSources,
                     separateLiveCategories = profile.separateLiveCategories
@@ -139,6 +143,36 @@ class TPBBridgePlugin : Plugin() {
         showProfileManager(activity)
     }
 
+    private fun showManifestManagerDialog(
+        activity: Activity,
+        bases: List<String>,
+        initialDisabledRefs: List<String>,
+        onDone: (List<String>) -> Unit
+    ) {
+        val disabled = initialDisabledRefs.toMutableSet()
+        val labels = bases.mapIndexed { index, base ->
+            val host = runCatching { android.net.Uri.parse(base).host }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?: "configured URL"
+            "Manifest ${index + 1} • $host"
+        }.toTypedArray()
+        val checked = bases.map { baseRef(it) !in disabled }.toBooleanArray()
+
+        AlertDialog.Builder(activity)
+            .setTitle("Enabled manifests")
+            .setMessage("Off stops every Home, Search, metadata and stream request for that manifest. Its URL remains saved.")
+            .setMultiChoiceItems(labels, checked) { _, which, enabled ->
+                val ref = baseRef(bases[which])
+                if (enabled) disabled.remove(ref) else disabled.add(ref)
+            }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Done") { _, _ ->
+                onDone(bases.map(::baseRef).filter { it in disabled })
+            }
+            .show()
+    }
+
     private fun showProfileManager(activity: Activity) {
         val prefs = activity.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
         var profiles = loadProfilesOrMigrate(prefs)
@@ -185,13 +219,15 @@ class TPBBridgePlugin : Plugin() {
             profiles.forEach { profile ->
                 val disabledKeys = profile.disabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
                 val activeCount = profile.homeSources.count { homeSourceKey(it) !in disabledKeys }
-                val manifests = profile.bases.size
+                val savedManifests = profile.allBases.size
+                val activeManifests = profile.bases.size
                 val button = Button(activity).apply {
                     isAllCaps = false
                     text = buildString {
                         append(profile.homeName)
                         append("\n")
-                        append(manifests).append(if (manifests == 1) " manifest" else " manifests")
+                        append(activeManifests).append('/').append(savedManifests)
+                            .append(" manifests active")
                         append(" • ").append(activeCount).append(" active sources")
                     }
                     setOnClickListener {
@@ -296,6 +332,7 @@ class TPBBridgePlugin : Plugin() {
         var availableSources = seed.homeSources
         var workingOrder = reconcileHomeOrder(seed.homeOrder, availableSources)
         var workingDisabled = seed.disabledSources
+        var workingDisabledManifestRefs = seed.disabledManifestRefs
 
         val root = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -314,6 +351,13 @@ class TPBBridgePlugin : Plugin() {
         }
         root.addView(manifestsEdit, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(helper("Manifest URLs can contain private API keys. Keep them private."))
+
+        val manageManifests = Button(activity).apply {
+            text = "Enable or disable manifests"
+            isAllCaps = false
+        }
+        root.addView(manageManifests)
+        root.addView(helper("Disabled manifests stay saved and can be switched back on without pasting the URL again."))
 
         root.addView(label("Home name"))
         val homeEdit = EditText(activity).apply {
@@ -377,6 +421,23 @@ class TPBBridgePlugin : Plugin() {
         }
         root.addView(status)
 
+        manageManifests.setOnClickListener {
+            val savedBases = parseManifestInput(manifestsEdit.text.toString())
+            if (savedBases.isEmpty()) {
+                status.text = "⚠ Add at least one valid manifest URL first."
+                return@setOnClickListener
+            }
+            showManifestManagerDialog(
+                activity,
+                savedBases,
+                workingDisabledManifestRefs
+            ) { disabled ->
+                workingDisabledManifestRefs = disabled
+                val active = savedBases.count { baseRef(it) !in disabled.toSet() }
+                status.text = "$active/${savedBases.size} manifests enabled • Save + refresh to apply"
+            }
+        }
+
         manageSources.setOnClickListener {
             showHomeSourceManagerDialog(
                 activity = activity,
@@ -433,7 +494,13 @@ class TPBBridgePlugin : Plugin() {
 
         save.setOnClickListener {
             val raw = manifestsEdit.text.toString().trim()
-            val bases = parseManifestInput(raw)
+            val allBases = parseManifestInput(raw)
+            val currentRefs = allBases.mapTo(mutableSetOf(), ::baseRef)
+            val disabledManifestRefsSnapshot = workingDisabledManifestRefs
+                .filter { it in currentRefs }
+                .distinct()
+            val disabledManifestSet = disabledManifestRefsSnapshot.toSet()
+            val bases = allBases.filter { baseRef(it) !in disabledManifestSet }
             val homeName = homeEdit.text.toString().trim().ifBlank { DEFAULT_HOME_NAME }
             val prefix = prefixEdit.text.toString()
             // Snapshot all UI-owned state before leaving the main thread.
@@ -445,7 +512,7 @@ class TPBBridgePlugin : Plugin() {
             val orderSnapshot = workingOrder.toList()
             val disabledSnapshot = workingDisabled.toList()
 
-            if (raw.isBlank() || bases.isEmpty()) {
+            if (raw.isBlank() || allBases.isEmpty()) {
                 status.text = "⚠ Add at least one valid manifest URL."
                 return@setOnClickListener
             }
@@ -458,11 +525,19 @@ class TPBBridgePlugin : Plugin() {
                     // A manual refresh must start from one fresh snapshot. The
                     // discovery helpers then share it with each other and Home.
                     invalidateManifestCache()
-                    val discovered = discoverBridgeRoutes(bases)
-                    val discoveredHome = try {
-                        discoverHomeSources(bases, separateLiveCategoriesEnabled)
-                    } catch (_: Throwable) {
+                    val discovered = if (bases.isEmpty()) {
+                        DiscoveryBundle(emptyList(), emptyList())
+                    } else {
+                        discoverBridgeRoutes(bases)
+                    }
+                    val discoveredHome = if (bases.isEmpty()) {
                         emptyList()
+                    } else {
+                        try {
+                            discoverHomeSources(bases, separateLiveCategoriesEnabled)
+                        } catch (_: Throwable) {
+                            emptyList()
+                        }
                     }
                     val discoveredSources = managedSourceList(
                         discoveredHome,
@@ -478,10 +553,12 @@ class TPBBridgePlugin : Plugin() {
                     val candidate = BridgeProfile(
                         id = seed.id,
                         manifestInput = raw,
+                        disabledManifestRefs = disabledManifestRefsSnapshot,
                         homeName = homeName,
                         searchPrefix = prefix,
                         searchGroups = discovered.searchGroups,
                         facetRoutes = discovered.facetRoutes,
+                        catalogSources = discoveredHome,
                         homeSources = discoveredSources,
                         homeOrder = nextOrder,
                         disabledSources = nextDisabled,

@@ -19,10 +19,12 @@ internal const val PREF_PROFILES = "profiles_v11"
 internal data class BridgeProfile(
     val id: String = UUID.randomUUID().toString(),
     val manifestInput: String,
+    val disabledManifestRefs: List<String> = emptyList(),
     val homeName: String = DEFAULT_HOME_NAME,
     val searchPrefix: String = DEFAULT_SEARCH_PREFIX,
     val searchGroups: List<SearchRouteGroup> = emptyList(),
     val facetRoutes: List<FacetRoute> = emptyList(),
+    val catalogSources: List<String> = emptyList(),
     val homeSources: List<String> = emptyList(),
     val homeOrder: List<String> = emptyList(),
     val disabledSources: List<String> = emptyList(),
@@ -32,8 +34,14 @@ internal data class BridgeProfile(
     val performerEnabled: Boolean = false,
     val tagEnabled: Boolean = false
 ) {
-    val bases: List<String>
+    val allBases: List<String>
         get() = parseManifestInput(manifestInput)
+
+    val bases: List<String>
+        get() {
+            val disabled = disabledManifestRefs.toSet()
+            return allBases.filter { baseRef(it) !in disabled }
+        }
 }
 
 internal fun newBridgeProfile(index: Int): BridgeProfile = BridgeProfile(
@@ -83,10 +91,12 @@ private fun profilesToJson(profiles: List<BridgeProfile>): String {
         arr.put(JSONObject().apply {
             put("id", profile.id)
             put("manifestInput", profile.manifestInput)
+            put("disabledManifestRefs", JSONArray(profile.disabledManifestRefs))
             put("homeName", profile.homeName)
             put("searchPrefix", profile.searchPrefix)
             put("searchGroups", JSONArray(saveRouteGroups(profile.searchGroups)))
             put("facetRoutes", JSONArray(saveFacetRoutes(profile.facetRoutes)))
+            put("catalogSources", JSONArray(saveHomeNameList(profile.catalogSources)))
             put("homeSources", JSONArray(saveHomeNameList(profile.homeSources)))
             put("homeOrder", JSONArray(saveHomeNameList(profile.homeOrder)))
             put("disabledSources", JSONArray(saveHomeNameList(profile.disabledSources)))
@@ -116,10 +126,16 @@ private fun profilesFromJson(json: String): List<BridgeProfile> {
                     BridgeProfile(
                         id = id,
                         manifestInput = manifestInput,
+                        disabledManifestRefs = loadHomeNameList(
+                            obj.optJSONArray("disabledManifestRefs")?.toString().orEmpty()
+                        ),
                         homeName = homeName,
                         searchPrefix = obj.optString("searchPrefix", DEFAULT_SEARCH_PREFIX),
                         searchGroups = loadRouteGroups(obj.optJSONArray("searchGroups")?.toString().orEmpty()),
                         facetRoutes = loadFacetRoutes(obj.optJSONArray("facetRoutes")?.toString().orEmpty()),
+                        catalogSources = loadHomeNameList(
+                            obj.optJSONArray("catalogSources")?.toString().orEmpty()
+                        ),
                         homeSources = loadHomeNameList(obj.optJSONArray("homeSources")?.toString().orEmpty()),
                         homeOrder = loadHomeNameList(obj.optJSONArray("homeOrder")?.toString().orEmpty()),
                         disabledSources = loadHomeNameList(obj.optJSONArray("disabledSources")?.toString().orEmpty()),

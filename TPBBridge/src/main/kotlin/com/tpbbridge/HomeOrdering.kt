@@ -24,7 +24,7 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.amap
-import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.mainPage
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newSearchResponseList
 import org.json.JSONArray
@@ -256,6 +256,7 @@ internal class TPBOrderedHomeProvider(
     internal val manifestBases: List<String>,
     internal val searchGroups: List<SearchRouteGroup>,
     internal val combinedSearchEnabled: Boolean,
+    internal val catalogSources: List<String>,
     internal val homeOrder: List<String>,
     internal val disabledSources: List<String>,
     internal val separateLiveCategories: Boolean
@@ -267,8 +268,27 @@ internal class TPBOrderedHomeProvider(
     override val searchTimeoutMs: Long? = 90_000L
 
     private val disabledKeys = disabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
+    private val activeCatalogSources = visibleHomeOrder(
+        homeOrder,
+        catalogSources.filter { homeSourceKey(it) !in disabledKeys }
+    )
+    private val usesIndependentRows = activeCatalogSources.isNotEmpty()
+
+    // CloudStream can now expand each saved TPB row independently. This avoids
+    // refetching every catalog when the user scrolls one expanded grid and lets
+    // each row carry its own pagination state.
+    override val mainPage = if (usesIndependentRows) {
+        activeCatalogSources.map { source -> mainPage(source, source) }
+    } else {
+        super.mainPage
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val requestedSource = request.data
+            .takeIf { usesIndependentRows }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val requestedKey = requestedSource?.let(::homeSourceKey)
         val rows = manifestBases.amap { base ->
             val manifest = fetchManifest(base) ?: return@amap emptyList<HomeRow>()
             val manifestIds = manifest.catalogs.map { it.id }.filter { it.isNotBlank() }.toSet()
@@ -286,7 +306,9 @@ internal class TPBOrderedHomeProvider(
                         catalog.id,
                         separateLiveCategories
                     )
-                    homeSourceKey(source) !in disabledKeys
+                    homeSourceKey(source) !in disabledKeys &&
+                        (requestedKey == null || homeSourceKey(source) == requestedKey) &&
+                        (page <= 1 || catalog.supportsSkip())
                 }
                 .amap { catalog ->
                     catalog.toHomeRow(
@@ -296,7 +318,7 @@ internal class TPBOrderedHomeProvider(
                         homeCatalogSourceName(catalog.name, catalog.id, separateLiveCategories)
                     )
                 }
-                .filter { it.items.isNotEmpty() }
+                .filter { it.items.isNotEmpty() || requestedKey != null }
         }.flatten()
 
         val merged = linkedMapOf<String, HomeRow>()
@@ -308,15 +330,24 @@ internal class TPBOrderedHomeProvider(
             } else {
                 merged[key] = old.copy(
                     items = (old.items + row.items).distinctBy { it.url },
-                    horizontal = old.horizontal || row.horizontal
+                    horizontal = old.horizontal || row.horizontal,
+                    hasNext = old.hasNext || row.hasNext
                 )
             }
         }
 
+        if (requestedSource != null && requestedKey != null && !merged.containsKey(requestedKey)) {
+            merged[requestedKey] = HomeRow(requestedSource, emptyList(), false, false)
+        }
+
         val ordered = orderHomeRows(merged.values, homeOrder)
+        // Older saved profiles may not have the per-row catalog snapshot yet.
+        // Keep their combined Home route pageable immediately after upgrading;
+        // the next Save + refresh upgrades them to independent row expansion.
+        val hasNext = ordered.any { it.hasNext }
         return newHomePageResponse(
             ordered.map { HomePageList(it.name, it.items, it.horizontal) },
-            false
+            hasNext
         )
     }
 
@@ -339,25 +370,20 @@ internal class TPBOrderedHomeProvider(
         val usable = if (page == 1) namedRoutes else namedRoutes.filter { it.route.supportsSkip }
         if (usable.isEmpty()) return emptyList<SearchResponse>() to false
 
-        val encoded = encodePath(query)
-        val skip = (page - 1) * SEARCH_PAGE_SIZE
+        val encoded = encodePath(query.trim())
         val entries = usable.amap { named ->
             val route = named.route
-            try {
-                val extras = buildString {
-                    append("search=").append(encoded)
-                    if (page > 1 && route.supportsSkip) append("&skip=").append(skip)
-                }
-                app.get(
-                    "${route.baseUrl}/catalog/${encodePath(route.type)}/${encodePath(route.catalogId)}/$extras.json",
-                    timeout = 90L
-                ).parsedSafe<CatalogResponse>()
-                    ?.metas.orEmpty()
-                    .filter { it.id.isNotBlank() && it.name.isNotBlank() }
-                    .map { Triple(named.source, route.baseUrl, it) }
-            } catch (_: Throwable) {
-                emptyList()
-            }
+            val extras = "search=$encoded"
+            fetchSearchCatalogEntries(
+                route.baseUrl,
+                route.type,
+                route.catalogId,
+                extras,
+                page,
+                route.supportsSkip
+            ).orEmpty()
+                .filter { it.id.isNotBlank() && it.name.isNotBlank() }
+                .map { Triple(named.source, route.baseUrl, it.withFallbackType(route.type)) }
         }.flatten()
 
         val deduped = entries.distinctBy { (_, base, entry) ->

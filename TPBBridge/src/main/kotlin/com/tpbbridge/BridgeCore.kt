@@ -24,6 +24,8 @@ import android.widget.TextView
 import android.widget.Toast
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.APIHolder
+import com.lagradost.cloudstream3.Actor
+import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
@@ -34,6 +36,7 @@ import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SeasonData
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SearchResponseList
+import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.addDate
@@ -83,7 +86,7 @@ internal class TPBHomeProvider(
         val rows = manifestBases.amap { base ->
             val manifest = fetchManifest(base) ?: return@amap emptyList<HomeRow>()
             manifest.catalogs
-                .filter { it.isHomeCatalog() }
+                .filter { it.isHomeCatalog() && (page <= 1 || it.supportsSkip()) }
                 .amap { catalog -> catalog.toHomeRow(base, this, page) }
                 .filter { it.items.isNotEmpty() }
         }.flatten()
@@ -98,14 +101,15 @@ internal class TPBHomeProvider(
                 val combined = (old.items + row.items).distinctBy { it.url }
                 merged[key] = old.copy(
                     items = combined,
-                    horizontal = old.horizontal || row.horizontal
+                    horizontal = old.horizontal || row.horizontal,
+                    hasNext = old.hasNext || row.hasNext
                 )
             }
         }
 
         return newHomePageResponse(
             merged.values.map { row -> HomePageList(row.name, row.items, row.horizontal) },
-            false
+            merged.values.any { it.hasNext }
         )
     }
 
@@ -140,28 +144,20 @@ internal class TPBSearchProvider(
         val usableRoutes = if (page == 1) routes else routes.filter { it.supportsSkip }
         if (usableRoutes.isEmpty()) return emptyList<SearchResponse>() to false
 
-        val encoded = encodePath(query)
-        val skip = (page - 1) * SEARCH_PAGE_SIZE
+        val encoded = encodePath(query.trim())
 
         val entries = usableRoutes.amap { route ->
-            try {
-                val extras = buildString {
-                    append("search=")
-                    append(encoded)
-                    if (page > 1 && route.supportsSkip) {
-                        append("&skip=")
-                        append(skip)
-                    }
-                }
-                val url = "${route.baseUrl}/catalog/${encodePath(route.type)}/${encodePath(route.catalogId)}/$extras.json"
-                app.get(url, timeout = 90L)
-                    .parsedSafe<CatalogResponse>()
-                    ?.metas.orEmpty()
-                    .filter { it.id.isNotBlank() && it.name.isNotBlank() }
-                    .map { route.baseUrl to it }
-            } catch (_: Throwable) {
-                emptyList()
-            }
+            val extras = "search=$encoded"
+            fetchSearchCatalogEntries(
+                route.baseUrl,
+                route.type,
+                route.catalogId,
+                extras,
+                page,
+                route.supportsSkip
+            ).orEmpty()
+                .filter { it.id.isNotBlank() && it.name.isNotBlank() }
+                .map { route.baseUrl to it.withFallbackType(route.type) }
         }.flatten()
 
         val deduped = entries.distinctBy { (base, entry) -> "${baseRef(base)}|${entry.type}|${entry.id}" }
@@ -184,20 +180,14 @@ internal abstract class TPBBaseProvider(
 
         val base = resolveBase(bridge.baseRef, bridge.baseUrl)
             ?: throw ErrorLoadingException("TPB manifest is no longer configured")
-        val type = fallback.type ?: bridge.type ?: "Porn"
+        val type = fallback.type?.takeIf { it.isNotBlank() }
+            ?: bridge.type?.takeIf { it.isNotBlank() }
+            ?: "Porn"
         val id = fallback.id
 
-        val meta = try {
-            val res = app.get(
-                "$base/meta/${encodePath(type)}/${encodePath(id)}.json",
-                timeout = 90L
-            ).parsedSafe<CatalogResponse>()
-            res?.meta ?: res?.metas?.firstOrNull { it.id == id } ?: res?.metas?.firstOrNull()
-        } catch (_: Throwable) {
-            null
-        } ?: fallback
+        val meta = fetchMetadataEntry(base, type, id) ?: fallback
 
-        val resolvedType = meta.type ?: type
+        val resolvedType = meta.type?.takeIf { it.isNotBlank() } ?: type
         val videos = meta.videos.orEmpty()
             .filter { it.id.isNotBlank() }
             .distinctBy { it.id }
@@ -216,49 +206,66 @@ internal abstract class TPBBaseProvider(
                         id = video.id
                     )
                 ) {
-                    name = video.title?.takeIf { it.isNotBlank() } ?: "Video ${index + 1}"
-                    season = 1
+                    name = collectionVideoTitle(video.title, index + 1)
+                    // CloudStream needs unique episode indexes to expose more
+                    // than one Play target, but season 0 is rendered as no
+                    // season number. The collection is named Videos below.
+                    season = 0
                     episode = index + 1
                     posterUrl = video.thumbnail ?: video.poster
-                    description = video.overview ?: video.description
+                    description = formatMetadataDescription(video.overview ?: video.description)
                     addDate(video.released)
                 }
             }
 
             return newTvSeriesLoadResponse(
-                responseName,
+                fixTitle(responseName),
                 url,
                 TvType.Others,
                 items
             ) {
                 posterUrl = meta.poster ?: fallback.poster
                 backgroundPosterUrl = meta.background ?: fallback.background
-                plot = meta.description ?: fallback.description
+                plot = formatMetadataDescription(meta.description ?: fallback.description)
                 year = meta.bestYear() ?: fallback.bestYear()
-                tags = meta.genre ?: meta.genres ?: fallback.genre ?: fallback.genres
-                seasonNames = listOf(SeasonData(season = 1, name = "Videos", displaySeason = null))
+                tags = meta.displayTags().ifEmpty { fallback.displayTags() }.takeIf { it.isNotEmpty() }
+                actors = meta.displayCast().ifEmpty { fallback.displayCast() }
+                    .map { ActorData(Actor(it)) }
+                    .takeIf { it.isNotEmpty() }
+                duration = parseRuntimeMinutes(meta.runtime ?: fallback.runtime)
+                score = Score.from10(meta.imdbRating ?: fallback.imdbRating)
+                logoUrl = meta.logo ?: fallback.logo
+                seasonNames = listOf(SeasonData(season = 0, name = "Videos", displaySeason = null))
             }
         }
 
-        // A single advertised child id is the canonical stream id. Falling back
-        // to the parent id keeps ordinary movie/tube metadata fully compatible.
+        // An explicitly advertised child id is canonical for that child. When
+        // there is no child, preserve the exact catalog id: TPB compact jstrg:
+        // ids contain multiple quality members and replacing them with a meta
+        // object's jstrm: id silently drops the other 4K/1080p member.
         val data = StreamLoadData(
             baseRef = baseRef(base),
             type = resolvedType,
-            id = videos.singleOrNull()?.id ?: meta.id.ifBlank { id }
+            id = videos.singleOrNull()?.id ?: id
         ).toJson()
 
         return newMovieLoadResponse(
-            responseName,
+            fixTitle(responseName),
             url,
             TvType.Others,
             data
         ) {
             posterUrl = meta.poster ?: fallback.poster
             backgroundPosterUrl = meta.background ?: fallback.background
-            plot = meta.description ?: fallback.description
+            plot = formatMetadataDescription(meta.description ?: fallback.description)
             year = meta.bestYear() ?: fallback.bestYear()
-            tags = meta.genre ?: meta.genres ?: fallback.genre ?: fallback.genres
+            tags = meta.displayTags().ifEmpty { fallback.displayTags() }.takeIf { it.isNotEmpty() }
+            actors = meta.displayCast().ifEmpty { fallback.displayCast() }
+                .map { ActorData(Actor(it)) }
+                .takeIf { it.isNotEmpty() }
+            duration = parseRuntimeMinutes(meta.runtime ?: fallback.runtime)
+            score = Score.from10(meta.imdbRating ?: fallback.imdbRating)
+            logoUrl = meta.logo ?: fallback.logo
         }
     }
 
@@ -282,7 +289,7 @@ internal abstract class TPBBaseProvider(
 
         var emitted = false
         response.streams
-            .distinctBy { it.stableKey() }
+            .deduplicatedForPlayback()
             .orderedForPlayback()
             .forEach { stream ->
                 if (stream.emit(subtitleCallback, callback)) emitted = true
@@ -345,7 +352,18 @@ internal data class Catalog(
         sourceName: String = deriveSourceName(name, id)
     ): HomeRow {
         val rawEntries = allTypes().amap { t ->
-            fetchHomeCatalogEntries(base, t, id, page, supportsSkip()).orEmpty()
+            fetchHomeCatalogEntries(
+                base,
+                t,
+                id,
+                page,
+                supportsSkip(),
+                if (isTpbLiveCatalogDescriptor(name, id)) {
+                    LIVE_HOME_CATALOG_CACHE_MS
+                } else {
+                    HOME_CATALOG_CACHE_MS
+                }
+            ).orEmpty().map { it.withFallbackType(t) }
         }.flatten().filter { it.id.isNotBlank() && it.name.isNotBlank() }
 
         val entries = rawEntries.distinctBy { "${it.type}|${it.id}" }
@@ -356,7 +374,8 @@ internal data class Catalog(
         return HomeRow(
             name = sourceName.ifBlank { name ?: id },
             items = items,
-            horizontal = horizontal
+            horizontal = horizontal,
+            hasNext = supportsSkip() && items.isNotEmpty()
         )
     }
 }
@@ -364,7 +383,8 @@ internal data class Catalog(
 internal data class HomeRow(
     val name: String,
     val items: List<SearchResponse>,
-    val horizontal: Boolean
+    val horizontal: Boolean,
+    val hasNext: Boolean
 )
 
 internal data class CatalogResponse(
@@ -382,6 +402,10 @@ internal data class CatalogEntry(
     @JsonProperty("type") val type: String? = null,
     @JsonProperty("genre") val genre: List<String>? = null,
     @JsonProperty("genres") val genres: List<String>? = null,
+    @JsonProperty("cast") val cast: List<String>? = null,
+    @JsonProperty("runtime") val runtime: String? = null,
+    @JsonProperty("imdbRating") val imdbRating: String? = null,
+    @JsonProperty("logo") val logo: String? = null,
     @JsonProperty("year") val yearString: String? = null,
     @JsonProperty("releaseInfo") val releaseInfo: String? = null,
     @JsonProperty("released") val released: String? = null,
@@ -406,6 +430,17 @@ internal data class CatalogEntry(
             .mapNotNull { Regex("(?:19|20)\\d{2}").find(it)?.value?.toIntOrNull() }
             .firstOrNull()
     }
+
+    fun displayTags(): List<String> = (genre.orEmpty() + genres.orEmpty())
+        .mapNotNull(::cleanText)
+        .distinctBy { it.lowercase(Locale.ROOT) }
+
+    fun displayCast(): List<String> = cast.orEmpty()
+        .mapNotNull(::cleanText)
+        .distinctBy { it.lowercase(Locale.ROOT) }
+
+    fun withFallbackType(fallbackType: String): CatalogEntry =
+        if (type.isNullOrBlank()) copy(type = fallbackType) else this
 }
 
 /** Child media advertised by Stremio metadata (used by TPB MegaPacks). */
@@ -473,7 +508,7 @@ internal data class Stream(
     val subtitles: List<Subtitle> = emptyList()
 ) {
     fun stableKey(): String = when {
-        !url.isNullOrBlank() -> "url:${url.trim()}"
+        !url.isNullOrBlank() -> "url:${url.trim()}|headers:${behaviorHints.requestHeadersKey()}"
         !infoHash.isNullOrBlank() -> "hash:${infoHash.lowercase(Locale.ROOT)}:${fileIdx ?: -1}"
         !ytId.isNullOrBlank() -> "yt:$ytId"
         !externalUrl.isNullOrBlank() -> "ext:$externalUrl"
@@ -486,7 +521,13 @@ internal data class Stream(
     ): Boolean {
         emitSubtitles(subtitleCallback)
 
-        val cleanName = cleanStreamName(name, title, behaviorHints?.filename)
+        val cleanName = cleanStreamName(
+            name,
+            title,
+            description,
+            behaviorHints?.filename,
+            behaviorHints?.videoSize
+        )
         val quality = inferQuality(name, title, description, behaviorHints?.filename)
 
         // Stremio stream pointers are alternatives. Prefer a direct/debrid URL when present.
@@ -562,6 +603,45 @@ internal data class Stream(
             subtitleCallback(newSubtitleFile(label, subUrl))
         }
     }
+}
+
+private fun BehaviorHints?.requestHeadersKey(): String {
+    if (this == null) return ""
+    val merged = linkedMapOf<String, String>()
+    headers?.forEach { (key, value) -> merged[key.lowercase(Locale.ROOT)] = value }
+    proxyHeaders?.request?.forEach { (key, value) -> merged[key.lowercase(Locale.ROOT)] = value }
+    return merged.entries
+        .sortedBy { it.key }
+        .joinToString("|") { (key, value) ->
+            "${key.length}:$key${value.length}:$value"
+        }
+}
+
+/**
+ * Collapse only true duplicate playback choices. Raw duplicates contribute all
+ * trackers and exact duplicates contribute all subtitles, so deduplication
+ * improves the menu without throwing away information needed for playback.
+ */
+internal fun List<Stream>.deduplicatedForPlayback(): List<Stream> {
+    val merged = linkedMapOf<String, Stream>()
+    forEach { stream ->
+        val key = stream.stableKey()
+        val old = merged[key]
+        merged[key] = if (old == null) {
+            stream
+        } else {
+            old.copy(
+                name = old.name ?: stream.name,
+                title = old.title ?: stream.title,
+                description = old.description ?: stream.description,
+                behaviorHints = old.behaviorHints ?: stream.behaviorHints,
+                sources = (old.sources + stream.sources).distinct(),
+                subtitles = (old.subtitles + stream.subtitles)
+                    .distinctBy { "${it.url.orEmpty()}|${it.lang.orEmpty()}|${it.id.orEmpty()}" }
+            )
+        }
+    }
+    return merged.values.toList()
 }
 
 /**
