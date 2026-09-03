@@ -1,3 +1,4 @@
+// v14 release: selectable MegaPack videos and exact-file P2P fallback.
 version = 14
 
 cloudstream {
