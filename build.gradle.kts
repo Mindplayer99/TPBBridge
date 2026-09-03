@@ -13,9 +13,10 @@ buildscript {
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        // Pin the current official CloudStream Gradle plugin revision instead
-        // of relying on JitPack's occasionally inconsistent -SNAPSHOT metadata.
-        classpath("com.github.recloudstream:gradle:32895aedb6")
+        // Pin an immutable CloudStream Gradle plugin revision whose POM and JAR
+        // are present on JitPack. The current revision can be reported as built
+        // while its artifacts are absent, and -SNAPSHOT is not reproducible.
+        classpath("com.github.recloudstream:gradle:81b1d424d2")
         // CloudStream pre-release is currently compiled with Kotlin 2.4 metadata.
         // Keep the plugin compiler on the latest compatible stable Kotlin line.
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.10")
