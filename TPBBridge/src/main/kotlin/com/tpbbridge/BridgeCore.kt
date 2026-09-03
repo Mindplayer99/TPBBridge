@@ -195,8 +195,9 @@ internal abstract class TPBBaseProvider(
 
         // Stremio represents a MegaPack (and any other multi-video item) as one
         // meta object with child video ids. A movie response can expose only one
-        // Play button, so give CloudStream one selectable child per real video.
-        // TvType.Others deliberately avoids pretending the collection is a TV show.
+        // Play button, so keep CloudStream's established Season/Episode list: one
+        // selectable episode per real child id. TvType.Others keeps the parent in
+        // TPBBridge's content category while retaining the usable episode UI.
         if (videos.size > 1) {
             val items = videos.mapIndexed { index, video ->
                 newEpisode(
@@ -207,10 +208,7 @@ internal abstract class TPBBaseProvider(
                     )
                 ) {
                     name = collectionVideoTitle(video.title, index + 1)
-                    // CloudStream needs unique episode indexes to expose more
-                    // than one Play target, but season 0 is rendered as no
-                    // season number. The collection is named Videos below.
-                    season = 0
+                    season = 1
                     episode = index + 1
                     posterUrl = video.thumbnail ?: video.poster
                     description = formatMetadataDescription(video.overview ?: video.description)
@@ -235,7 +233,7 @@ internal abstract class TPBBaseProvider(
                 duration = parseRuntimeMinutes(meta.runtime ?: fallback.runtime)
                 score = Score.from10(meta.imdbRating ?: fallback.imdbRating)
                 logoUrl = meta.logo ?: fallback.logo
-                seasonNames = listOf(SeasonData(season = 0, name = "Videos", displaySeason = null))
+                seasonNames = listOf(SeasonData(season = 1, name = "Videos", displaySeason = null))
             }
         }
 
