@@ -344,17 +344,8 @@ internal data class Catalog(
         page: Int,
         sourceName: String = deriveSourceName(name, id)
     ): HomeRow {
-        val skip = ((page - 1).coerceAtLeast(0) * SEARCH_PAGE_SIZE)
         val rawEntries = allTypes().amap { t ->
-            try {
-                val suffix = if (page > 1 && supportsSkip()) "/skip=$skip" else ""
-                app.get(
-                    "$base/catalog/${encodePath(t)}/${encodePath(id)}$suffix.json",
-                    timeout = 90L
-                ).parsedSafe<CatalogResponse>()?.metas.orEmpty()
-            } catch (_: Throwable) {
-                emptyList()
-            }
+            fetchHomeCatalogEntries(base, t, id, page, supportsSkip()).orEmpty()
         }.flatten().filter { it.id.isNotBlank() && it.name.isNotBlank() }
 
         val entries = rawEntries.distinctBy { "${it.type}|${it.id}" }
