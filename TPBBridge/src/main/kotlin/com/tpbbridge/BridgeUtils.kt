@@ -577,16 +577,25 @@ internal fun formatMetadataDescription(value: String?): String? {
  * series. CloudStream already numbers selectable rows, so remove only those
  * synthetic edge decorations and retain the actual video title.
  */
+private val collectionTitleEdgePatterns: List<Regex> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+    // Android's ICU regex engine treats a character class beginning with "[:"
+    // as a Unicode/POSIX property. Use explicit alternatives instead, and skip
+    // any pattern the installed Android runtime cannot compile so metadata can
+    // never prevent a MegaPack page from opening.
+    listOf(
+        "\\s*(?:-|–|—|\\||:)?\\s*S\\d+\\s*(?:\\.|_|:|-)?\\s*E\\d+\\s*$",
+        "^\\s*S\\d+\\s*(?:\\.|_|:|-)?\\s*E\\d+\\s*(?:-|–|—|\\||:)?\\s*",
+        "\\s*(?:-|–|—|\\||:)?\\s*Season\\s*\\d+\\s*(?:\\.|_|:|-)?\\s*Episode\\s*\\d+\\s*$",
+        "^\\s*Season\\s*\\d+\\s*(?:\\.|_|:|-)?\\s*Episode\\s*\\d+\\s*(?:-|–|—|\\||:)?\\s*"
+    ).mapNotNull { source ->
+        runCatching { Regex(source, RegexOption.IGNORE_CASE) }.getOrNull()
+    }
+}
+
 internal fun collectionVideoTitle(value: String?, index: Int): String {
     val fallback = "Video $index"
     var title = cleanText(value) ?: return fallback
-    val edgePatterns = listOf(
-        Regex("(?i)\\s*[-–—|:]?\\s*S\\d+\\s*[:._-]?\\s*E\\d+\\s*$"),
-        Regex("(?i)^\\s*S\\d+\\s*[:._-]?\\s*E\\d+\\s*[-–—|:]?\\s*"),
-        Regex("(?i)\\s*[-–—|:]?\\s*Season\\s*\\d+\\s*[:._-]?\\s*Episode\\s*\\d+\\s*$"),
-        Regex("(?i)^\\s*Season\\s*\\d+\\s*[:._-]?\\s*Episode\\s*\\d+\\s*[-–—|:]?\\s*")
-    )
-    edgePatterns.forEach { pattern -> title = title.replace(pattern, "").trim() }
+    collectionTitleEdgePatterns.forEach { pattern -> title = title.replace(pattern, "").trim() }
     return fixTitle(title.ifBlank { fallback })
 }
 
