@@ -1,5 +1,5 @@
-// v17 release: restore MegaPack episode navigation and clarify manifest switches.
-version = 17
+// v18 release: Android-safe MegaPack title cleanup with a non-blocking fallback.
+version = 18
 
 cloudstream {
     language = "en"
