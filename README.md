@@ -2,6 +2,16 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v19: guided setup and safer fast refresh
+
+v19 redesigns TPBBridge's Android setup dialogs around the real workflow instead of copying TPB's ever-changing web configurator into the extension. A new dashboard explains the three steps, opens the official TPB configurator directly, shows exact profile/manifest/source/search state, and uses theme-aware cards and explicit ON/OFF wording throughout.
+
+The profile editor now validates manifest input live, reports invalid and duplicate entries, refuses to replace a working profile while an invalid entry remains, updates switch counts as URLs change, and gives every saved URL a privacy-safe identifier. Manifest and source managers add **Enable all / Disable all**, clearer zero-request states, and accurate active counts.
+
+Multi-manifest **Save + refresh** now fetches up to four independent manifests concurrently and reuses that one snapshot for all discovery. The operation remains transactional: if any enabled manifest fails validation or discovery, the saved profile and its active CloudStream providers stay untouched. Catalogue, search, stream and debrid semantics are unchanged.
+
+Images still come only from TPB metadata. v19 prefers the supplied poster and falls back to the supplied backdrop when a card would otherwise be blank; it does not scrape, probe, rewrite or preload image URLs. MegaPacks retain v18's Android-safe title formatting and the v17 **Season 1 / Episode** layout.
+
 ## v18: Android MegaPack loading fix
 
 v18 fixes the device-only `Incorrect Unicode property` crash that could stop a MegaPack before CloudStream created its Season/Episode list. Android's ICU regex engine interpreted a title-separator character class beginning with `[:` as a malformed Unicode/POSIX property even though the desktop JVM compiler accepted it. The title cleaner now uses Android-safe explicit alternatives, compiles them only once, and skips any pattern rejected by a device runtime instead of failing the detail page.

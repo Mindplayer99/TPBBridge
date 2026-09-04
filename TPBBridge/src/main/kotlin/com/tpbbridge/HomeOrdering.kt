@@ -13,9 +13,9 @@ import android.app.AlertDialog
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
@@ -435,11 +435,45 @@ internal fun showHomeSourceManagerDialog(
     fun render() {
         container.removeAllViews()
         container.addView(TextView(activity).apply {
-            text = "Off hides a source from Home and all TPBBridge searches. Order controls Home rows."
+            val active = working.count { homeSourceKey(it) !in disabledKeys }
+            text = "$active/${working.size} sources ON\n" +
+                "OFF hides a source from Home and every TPBBridge search. Arrows control Home-row order."
             textSize = 13f
             alpha = 0.76f
             setPadding(0, 0, 0, dp(8))
         })
+
+        val bulk = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        bulk.addView(
+            Button(activity).apply {
+                text = "Enable all"
+                isAllCaps = false
+                setOnClickListener {
+                    defaults.forEach { disabledKeys.remove(homeSourceKey(it)) }
+                    render()
+                }
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+        bulk.addView(
+            Button(activity).apply {
+                text = "Disable all"
+                isAllCaps = false
+                setOnClickListener {
+                    defaults.forEach { disabledKeys.add(homeSourceKey(it)) }
+                    render()
+                }
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+        container.addView(bulk)
 
         working.forEachIndexed { index, source ->
             val row = LinearLayout(activity).apply {
@@ -448,14 +482,17 @@ internal fun showHomeSourceManagerDialog(
                 setPadding(0, dp(2), 0, dp(2))
             }
 
-            val enabled = CheckBox(activity).apply {
-                text = "${index + 1}. $source"
-                textSize = 16f
+            val enabled = Switch(activity).apply {
                 isChecked = homeSourceKey(source) !in disabledKeys
                 setPadding(dp(2), 0, dp(6), 0)
+                fun updateText() {
+                    text = "${index + 1}. $source\n${if (isChecked) "ON • visible" else "OFF • no requests"}"
+                }
+                updateText()
                 setOnCheckedChangeListener { _, checked ->
                     val key = homeSourceKey(source)
                     if (checked) disabledKeys.remove(key) else disabledKeys.add(key)
+                    updateText()
                 }
             }
             row.addView(
@@ -500,6 +537,7 @@ internal fun showHomeSourceManagerDialog(
 
         container.addView(Button(activity).apply {
             text = "Reset order"
+            isAllCaps = false
             setOnClickListener {
                 working = defaults.toMutableList()
                 render()

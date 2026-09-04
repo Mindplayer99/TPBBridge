@@ -65,7 +65,9 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 internal fun discoverSearchRoutes(bases: List<String>): List<SearchRouteGroup> {
     data class Candidate(
@@ -442,15 +444,85 @@ internal fun invalidateManifestCache() {
     metadataCache.clear()
 }
 
-internal fun parseManifestInput(raw: String): List<String> {
-    return raw
+internal data class ManifestInputAnalysis(
+    val totalEntries: Int,
+    val validBases: List<String>,
+    val invalidEntries: Int,
+    val duplicateEntries: Int
+)
+
+/**
+ * Parse manifest input once for both UI feedback and runtime storage. Invalid
+ * lines and duplicates are reported instead of being silently discarded by the
+ * setup screen; callers that only need the normalized bases retain the previous
+ * behavior through [parseManifestInput].
+ */
+internal fun analyzeManifestInput(raw: String): ManifestInputAnalysis {
+    val entries = raw
         .lineSequence()
         .flatMap { it.split(',').asSequence() }
         .map { it.trim() }
         .filter { it.isNotBlank() }
-        .mapNotNull { normalizeManifestBase(it) }
+        .toList()
+    val normalized = entries.mapNotNull(::normalizeManifestBase)
+    val distinct = normalized
         .distinct()
         .toList()
+    return ManifestInputAnalysis(
+        totalEntries = entries.size,
+        validBases = distinct,
+        invalidEntries = entries.size - normalized.size,
+        duplicateEntries = normalized.size - distinct.size
+    )
+}
+
+internal fun parseManifestInput(raw: String): List<String> =
+    analyzeManifestInput(raw).validBases
+
+/**
+ * Download independent manifests in parallel during a manual Save + refresh.
+ * Discovery then reuses the same cached JSON, so a profile with several split
+ * manifests waits roughly for the slowest endpoint instead of their combined
+ * latency. Any failure still aborts the whole refresh and keeps the old profile
+ * active; private configured paths are never included in the error message.
+ */
+internal fun preloadManifestSnapshots(bases: List<String>) {
+    val distinct = bases.distinct()
+    if (distinct.isEmpty()) return
+
+    data class Failure(val index: Int, val base: String, val cause: Throwable)
+
+    val executor = Executors.newFixedThreadPool(distinct.size.coerceAtMost(4))
+    val failures = try {
+        executor.invokeAll(
+            distinct.mapIndexed { index, base ->
+                Callable {
+                    try {
+                        fetchManifestText(base)
+                        null
+                    } catch (t: Throwable) {
+                        Failure(index, base, t)
+                    }
+                }
+            }
+        ).mapNotNull { future -> future.get() }
+    } finally {
+        executor.shutdownNow()
+    }
+
+    val failure = failures.firstOrNull() ?: return
+    val host = runCatching { URL(failure.base).host }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
+        ?: "configured host"
+    val detail = failure.cause.message
+        ?.substringBefore('\n')
+        ?.take(120)
+        ?.takeIf { it.isNotBlank() }
+    throw IllegalStateException(
+        "Manifest ${failure.index + 1} ($host) could not be read" +
+            if (detail == null) "." else ": $detail"
+    )
 }
 
 internal fun normalizeManifestBase(input: String): String? {
@@ -551,6 +623,12 @@ internal fun cleanText(value: String?): String? = value
     ?.replace(Regex("\\s{2,}"), " ")
     ?.trim()
     ?.takeIf { it.isNotBlank() }
+
+/** Prefer TPB's real poster, then its backdrop; never probe or rewrite image URLs. */
+internal fun preferredImageUrl(vararg values: String?): String? = values
+    .asSequence()
+    .mapNotNull { it?.trim()?.takeIf { value -> value.isNotBlank() } }
+    .firstOrNull()
 
 internal fun formatMetadataDescription(value: String?): String? {
     val normalized = value
