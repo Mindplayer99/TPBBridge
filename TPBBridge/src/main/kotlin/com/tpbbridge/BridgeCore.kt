@@ -210,7 +210,14 @@ internal abstract class TPBBaseProvider(
                     name = collectionVideoTitle(video.title, index + 1)
                     season = 1
                     episode = index + 1
-                    posterUrl = video.thumbnail ?: video.poster
+                    posterUrl = preferredImageUrl(
+                        video.thumbnail,
+                        video.poster,
+                        meta.poster,
+                        fallback.poster,
+                        meta.background,
+                        fallback.background
+                    )
                     description = formatMetadataDescription(video.overview ?: video.description)
                     addDate(video.released)
                 }
@@ -222,8 +229,18 @@ internal abstract class TPBBaseProvider(
                 TvType.Others,
                 items
             ) {
-                posterUrl = meta.poster ?: fallback.poster
-                backgroundPosterUrl = meta.background ?: fallback.background
+                posterUrl = preferredImageUrl(
+                    meta.poster,
+                    fallback.poster,
+                    meta.background,
+                    fallback.background
+                )
+                backgroundPosterUrl = preferredImageUrl(
+                    meta.background,
+                    fallback.background,
+                    meta.poster,
+                    fallback.poster
+                )
                 plot = formatMetadataDescription(meta.description ?: fallback.description)
                 year = meta.bestYear() ?: fallback.bestYear()
                 tags = meta.displayTags().ifEmpty { fallback.displayTags() }.takeIf { it.isNotEmpty() }
@@ -253,8 +270,18 @@ internal abstract class TPBBaseProvider(
             TvType.Others,
             data
         ) {
-            posterUrl = meta.poster ?: fallback.poster
-            backgroundPosterUrl = meta.background ?: fallback.background
+            posterUrl = preferredImageUrl(
+                meta.poster,
+                fallback.poster,
+                meta.background,
+                fallback.background
+            )
+            backgroundPosterUrl = preferredImageUrl(
+                meta.background,
+                fallback.background,
+                meta.poster,
+                fallback.poster
+            )
             plot = formatMetadataDescription(meta.description ?: fallback.description)
             year = meta.bestYear() ?: fallback.bestYear()
             tags = meta.displayTags().ifEmpty { fallback.displayTags() }.takeIf { it.isNotEmpty() }
@@ -418,7 +445,7 @@ internal data class CatalogEntry(
             entry = this
         ).toJson()
         return provider.newMovieSearchResponse(fixTitle(name), payload, TvType.Others) {
-            posterUrl = poster
+            posterUrl = preferredImageUrl(poster, background)
         }
     }
 
