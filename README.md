@@ -2,6 +2,12 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v18: Android MegaPack loading fix
+
+v18 fixes the device-only `Incorrect Unicode property` crash that could stop a MegaPack before CloudStream created its Season/Episode list. Android's ICU regex engine interpreted a title-separator character class beginning with `[:` as a malformed Unicode/POSIX property even though the desktop JVM compiler accepted it. The title cleaner now uses Android-safe explicit alternatives, compiles them only once, and skips any pattern rejected by a device runtime instead of failing the detail page.
+
+The v17 MegaPack structure is unchanged: **Season 1 / Episode** navigation, real TPB child ids, formatted descriptions/tags and the complete v16 catalogue/stream behavior all remain intact.
+
 ## v17: MegaPack episode navigation and clear manifest switches
 
 v17 is a focused correction to v16. MegaPacks again use CloudStream's previous **Season 1 / Episode** list, with one playable episode per real TPB child video. The v16 presentation improvements remain: synthetic `Sxx:Exx` text is removed from child titles, descriptions are formatted into readable lines, parent tags/cast/runtime/rating/logo metadata is kept when TPB supplies it, and every episode still resolves its exact child stream id.
