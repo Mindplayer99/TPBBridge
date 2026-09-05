@@ -436,8 +436,8 @@ internal fun showHomeSourceManagerDialog(
         container.removeAllViews()
         container.addView(TextView(activity).apply {
             val active = working.count { homeSourceKey(it) !in disabledKeys }
-            text = "$active/${working.size} sources ON\n" +
-                "OFF hides a source from Home and every TPBBridge search. Arrows control Home-row order."
+            text = "$active/${working.size} sources ON • OFF makes no requests\n" +
+                "Use arrows to order Home rows."
             textSize = 13f
             alpha = 0.76f
             setPadding(0, 0, 0, dp(8))

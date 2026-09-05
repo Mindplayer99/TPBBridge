@@ -2,6 +2,14 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v20: cleaner setup and clearer navigation
+
+v20 keeps v19's dashboard, validation, transactional refresh and performance work while removing repeated tutorial copy. Essential privacy, invalid-input, zero-request and rollback warnings remain in shorter form.
+
+The main settings page still exits with **Close**. Opening a profile now returns with **← Back**. Both configurator actions use the clean official `/configure` URL and ask Android to open a fresh browser document; the installed browser ultimately decides whether that becomes a new tab.
+
+No profile storage, catalogue, search, image, stream, debrid, cache or MegaPack behavior changed.
+
 ## v19: guided setup and safer fast refresh
 
 v19 redesigns TPBBridge's Android setup dialogs around the real workflow instead of copying TPB's ever-changing web configurator into the extension. A new dashboard explains the three steps, opens the official TPB configurator directly, shows exact profile/manifest/source/search state, and uses theme-aware cards and explicit ON/OFF wording throughout.
