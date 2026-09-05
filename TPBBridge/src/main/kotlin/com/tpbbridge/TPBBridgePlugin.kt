@@ -639,11 +639,6 @@ class TPBBridgePlugin : Plugin() {
         val manifestPanel = setupPanel(activity, palette).apply {
             addView(setupText(activity, palette, "1. TPB manifests", 17f, bold = true))
             addView(helper("Paste one or more generated manifest URLs."))
-            addView(Button(activity).apply {
-                text = "Open fresh TPB configurator ↗"
-                isAllCaps = false
-                setOnClickListener { openTpbConfigurator(activity) }
-            })
             addView(label("Manifest URL(s)"))
             addView(helper("One URL per line • split manifests can stay together"))
         }
