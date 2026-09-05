@@ -1,5 +1,5 @@
-// v20 release: cleaner setup copy, clearer navigation and fresh configurator launch.
-version = 20
+// v21 release: keep the fresh configurator action on the main settings screen only.
+version = 21
 
 cloudstream {
     language = "en"
