@@ -1,5 +1,5 @@
-// v19 release: guided setup UI, validated manifests and faster safe refresh.
-version = 19
+// v20 release: cleaner setup copy, clearer navigation and fresh configurator launch.
+version = 20
 
 cloudstream {
     language = "en"
