@@ -2,6 +2,10 @@
 
 CloudStream Red/pre-release bridge for Stremio-compatible TPB manifests.
 
+## v21: one configurator entry point
+
+v21 keeps **Open fresh TPB configurator ↗** on the main TPBBridge settings screen and removes its duplicate from every profile editor. All v20 warnings, navigation, profile controls and runtime behaviour remain unchanged.
+
 ## v20: cleaner setup and clearer navigation
 
 v20 keeps v19's dashboard, validation, transactional refresh and performance work while removing repeated tutorial copy. Essential privacy, invalid-input, zero-request and rollback warnings remain in shorter form.
