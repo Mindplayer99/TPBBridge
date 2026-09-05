@@ -155,7 +155,10 @@ private fun setupText(
 }
 
 private fun openTpbConfigurator(activity: Activity) {
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(TPB_CONFIGURE_URL))
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(TPB_CONFIGURE_URL)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+        addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+    }
     runCatching { activity.startActivity(intent) }
         .onFailure {
             Toast.makeText(
@@ -293,8 +296,8 @@ class TPBBridgePlugin : Plugin() {
 
         fun updateSummary() {
             val onCount = bases.count { baseRef(it) !in disabled }
-            summary.text = "$onCount enabled • ${bases.size - onCount} disabled\n" +
-                "Disabled URLs stay saved and make zero catalogue, search, metadata or stream requests."
+            summary.text = "$onCount ON • ${bases.size - onCount} OFF\n" +
+                "OFF URLs stay saved and make no requests."
             summary.setTextColor(if (onCount > 0) palette.success else palette.warning)
         }
 
@@ -302,7 +305,7 @@ class TPBBridgePlugin : Plugin() {
 
         fun updateSwitchLabel(index: Int, manifestSwitch: Switch) {
             manifestSwitch.text = labels[index] + "\n" + if (manifestSwitch.isChecked) {
-                "ON • included after Save + refresh"
+                "ON • active after Save + refresh"
             } else {
                 "OFF • retained, no requests"
             }
@@ -431,17 +434,15 @@ class TPBBridgePlugin : Plugin() {
             addSetupPanel(activity, root, dashboard)
 
             val guide = setupPanel(activity, palette).apply {
-                addView(setupText(activity, palette, "How setup works", 16f, bold = true))
+                addView(setupText(activity, palette, "TPB configurator", 16f, bold = true))
                 addView(setupText(
                     activity,
                     palette,
-                    "1. Choose sources, qualities, debrid and metadata on TPB's configurator.\n" +
-                        "2. Paste its generated manifest URL into a profile.\n" +
-                        "3. Save + refresh, then arrange what CloudStream shows.",
+                    "Configure TPB, then paste its manifest URL into a profile.",
                     13.5f
                 ).apply { setPadding(0, dp(5), 0, dp(6)) })
                 addView(Button(activity).apply {
-                    text = "Open TPB configurator"
+                    text = "Open fresh TPB configurator ↗"
                     isAllCaps = false
                     setOnClickListener { openTpbConfigurator(activity) }
                 })
@@ -449,7 +450,7 @@ class TPBBridgePlugin : Plugin() {
             addSetupPanel(activity, root, guide)
 
             root.addView(header("Profiles"))
-            root.addView(helper("Profiles are independent. A profile can contain one or more split manifest URLs."))
+            root.addView(helper("Profiles stay independent • split manifest URLs can share one profile"))
 
             profiles.forEach { profile ->
                 val disabledKeys = profile.disabledSources.mapTo(mutableSetOf(), ::homeSourceKey)
@@ -480,7 +481,7 @@ class TPBBridgePlugin : Plugin() {
                     addView(setupText(
                         activity,
                         palette,
-                        if (searchCount > 0) "$searchCount CloudStream search/filter providers" else "No optional search/filter providers",
+                        if (searchCount > 0) "$searchCount search/filter providers" else "No optional search/filter providers",
                         12.5f
                     ).apply { setPadding(0, dp(2), 0, dp(7)) })
                     addView(Button(activity).apply {
@@ -513,7 +514,7 @@ class TPBBridgePlugin : Plugin() {
                 addView(setupText(
                     activity,
                     palette,
-                    "Manifest URLs may contain API keys. TPBBridge stores them only in CloudStream's private app data.",
+                    "Manifest URLs may contain API keys; they stay in CloudStream's private app data.",
                     13f
                 ).apply { setPadding(0, 0, 0, dp(6)) })
                 addView(Button(activity).apply {
@@ -629,7 +630,7 @@ class TPBBridgePlugin : Plugin() {
             addView(setupText(
                 activity,
                 palette,
-                "The TPB URL decides what exists. This profile decides how it is named, searched, ordered and enabled in CloudStream.",
+                "TPB controls content; this profile controls its CloudStream layout.",
                 13.5f
             ).apply { setPadding(0, dp(5), 0, 0) })
         }
@@ -637,16 +638,14 @@ class TPBBridgePlugin : Plugin() {
 
         val manifestPanel = setupPanel(activity, palette).apply {
             addView(setupText(activity, palette, "1. TPB manifests", 17f, bold = true))
-            addView(helper(
-                "Choose sources, qualities, debrid and metadata on TPB's official configurator, then paste its generated URL here."
-            ))
+            addView(helper("Paste one or more generated manifest URLs."))
             addView(Button(activity).apply {
-                text = "Open TPB configurator"
+                text = "Open fresh TPB configurator ↗"
                 isAllCaps = false
                 setOnClickListener { openTpbConfigurator(activity) }
             })
             addView(label("Manifest URL(s)"))
-            addView(helper("One URL per line • split manifests can stay together in this profile"))
+            addView(helper("One URL per line • split manifests can stay together"))
         }
         val manifestsEdit = EditText(activity).apply {
             minLines = 3
@@ -667,19 +666,19 @@ class TPBBridgePlugin : Plugin() {
             setPadding(0, dp(5), 0, dp(3))
         }
         manifestPanel.addView(manifestInputStatus)
-        manifestPanel.addView(helper("URLs may contain private API keys. They stay in CloudStream's private app data."))
+        manifestPanel.addView(helper("API keys in URLs stay in CloudStream's private app data."))
 
         val manageManifests = Button(activity).apply {
             text = manifestSwitchLabel(seed.allBases, workingDisabledManifestRefs)
             isAllCaps = false
         }
         manifestPanel.addView(manageManifests)
-        manifestPanel.addView(helper("Turn URLs off without deleting them. OFF manifests make no requests."))
+        manifestPanel.addView(helper("OFF stays saved and makes no requests."))
         addSetupPanel(activity, root, manifestPanel)
 
         val appearancePanel = setupPanel(activity, palette).apply {
             addView(setupText(activity, palette, "2. CloudStream appearance", 17f, bold = true))
-            addView(helper("These labels affect CloudStream only; they do not alter the TPB manifest."))
+            addView(helper("CloudStream labels only."))
             addView(label("Home name"))
         }
         val homeEdit = EditText(activity).apply {
@@ -688,7 +687,6 @@ class TPBBridgePlugin : Plugin() {
             hint = DEFAULT_HOME_NAME
         }
         appearancePanel.addView(homeEdit)
-        appearancePanel.addView(helper("Name shown for this profile's Home provider"))
 
         appearancePanel.addView(label("Search prefix (optional)"))
         val prefixEdit = EditText(activity).apply {
@@ -697,12 +695,12 @@ class TPBBridgePlugin : Plugin() {
             hint = "TPB • "
         }
         appearancePanel.addView(prefixEdit)
-        appearancePanel.addView(helper("Added only to this profile's individual source searches"))
+        appearancePanel.addView(helper("Added to individual source searches."))
         addSetupPanel(activity, root, appearancePanel)
 
         val sourcesPanel = setupPanel(activity, palette).apply {
             addView(setupText(activity, palette, "3. Sources & search", 17f, bold = true))
-            addView(helper("Control CloudStream visibility. TPB source selection itself stays in the manifest."))
+            addView(helper("Visibility and order in CloudStream."))
         }
         val manageSources = Button(activity).apply {
             val disabled = workingDisabled.mapTo(mutableSetOf(), ::homeSourceKey)
@@ -713,8 +711,8 @@ class TPBBridgePlugin : Plugin() {
         }
         sourcesPanel.addView(manageSources)
         sourcesPanel.addView(helper(
-            if (availableSources.isEmpty()) "Save + refresh once to discover this profile's sources"
-            else "Enable, disable, and arrange this profile's sources"
+            if (availableSources.isEmpty()) "Save + refresh once to discover sources."
+            else "Enable, disable or reorder sources."
         ))
 
         sourcesPanel.addView(label("Live catalogs"))
@@ -724,24 +722,22 @@ class TPBBridgePlugin : Plugin() {
         )
         sourcesPanel.addView(separateLiveCategories)
         sourcesPanel.addView(helper(
-            "Off: one Stripchat row and one Chaturbate row. On: enabled region/category catalogs get their own rows. " +
-                "Ignored safely when this profile has no live catalogs."
+            "OFF: one row per live service • ON: separate category rows. No effect without live catalogs."
         ))
 
         sourcesPanel.addView(label("Search"))
         val parentSearch = toggle("Search through Home name", seed.parentSearch)
         sourcesPanel.addView(parentSearch)
-        sourcesPanel.addView(helper("Combines this profile's enabled sources only"))
+        sourcesPanel.addView(helper("Combines enabled sources."))
 
         sourcesPanel.addView(label("Extra filters"))
-        sourcesPanel.addView(helper("Search only • profile-specific • never shown as Home rows"))
+        sourcesPanel.addView(helper("Search-only • unavailable manifest filters are ignored"))
         val studio = toggle("Studio", seed.studioEnabled)
         val performer = toggle("Performer", seed.performerEnabled)
         val tag = toggle("Tag", seed.tagEnabled)
         sourcesPanel.addView(studio)
         sourcesPanel.addView(performer)
         sourcesPanel.addView(tag)
-        sourcesPanel.addView(helper("Requires matching filter catalogs in the manifest; unavailable filters are ignored safely."))
         addSetupPanel(activity, root, sourcesPanel)
 
         val status = TextView(activity).apply {
@@ -833,7 +829,7 @@ class TPBBridgePlugin : Plugin() {
         val savePanel = setupPanel(activity, palette, raised = true).apply {
             addView(save)
             addView(helper(
-                "Enabled manifests are checked together. Nothing is replaced unless every check and the local save succeed."
+                "All enabled manifests must pass; otherwise the current profile stays active."
             ).apply { setPadding(0, dp(5), 0, 0) })
         }
         addSetupPanel(activity, root, savePanel)
@@ -841,7 +837,7 @@ class TPBBridgePlugin : Plugin() {
         if (current != null) {
             root.addView(section("Remove profile"))
             val removePanel = setupPanel(activity, palette).apply {
-                addView(helper("Removes only this profile. Other profiles and CloudStream data stay untouched."))
+                addView(helper("Other profiles and CloudStream data stay untouched."))
                 addView(Button(activity).apply {
                     text = "Remove ${current.homeName}"
                     isAllCaps = false
@@ -873,7 +869,7 @@ class TPBBridgePlugin : Plugin() {
         editorDialog = AlertDialog.Builder(activity)
             .setTitle(if (current == null) "Add profile" else "Configure profile")
             .setView(scroll)
-            .setNegativeButton("Close", null)
+            .setNegativeButton("← Back", null)
             .create()
 
         save.setOnClickListener {
